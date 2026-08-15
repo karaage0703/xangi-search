@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "xangi-search",
+  "displayName": "xangi search",
+  "description": "ワークスペース内のファイルを、LLMを使わずローカルで検索します。",
+  "permissions": [
+    "workspace内のテキストファイル読み取り",
+    "localhostで検索serviceを起動",
+    "workspaceの.xangi-search directoryへ検索indexと設定を保存"
+  ],
+  "version": "0.1.0",
+  "entrypoint": ".venv/bin/xangi-search-extension",
+  "setup": {
+    "instructions": "XANGI_SETUP.md"
+  },
+  "ui": {
+    "capability": "workspace.search",
+    "path": "/ui"
+  },
+  "agentBackend": {
+    "id": "workspace-search",
+    "displayName": "xangi search",
+    "capability": "workspace.search",
+    "path": "/agent"
+  },
+  "capabilities": [
+    {
+      "id": "workspace.search",
+      "protocol": "http",
+      "baseUrl": "http://127.0.0.1:7891",
+      "healthPath": "/health"
+    }
+  ]
+}
