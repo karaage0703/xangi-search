@@ -7,6 +7,7 @@ import re
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
@@ -26,19 +27,30 @@ class SearchServer(ThreadingHTTPServer):
     def __init__(
         self,
         address: tuple[str, int],
-        index: SearchIndex,
+        index: SearchIndex | None,
         settings: SettingsStore | None = None,
         auth_token: str | None = None,
+        *,
+        workspace: Path | None = None,
     ):
         super().__init__(address, SearchHandler)
+        if index is None and workspace is None:
+            raise ValueError(
+                "workspace is required until the search index is available"
+            )
+        resolved_workspace = (
+            index.workspace if index is not None else workspace
+        ).resolve()
+        self.workspace = resolved_workspace
         self.index = index
         self.settings = settings or SettingsStore(
-            default_settings_path(index.workspace),
-            default_path_weights=initial_path_weights(index.workspace),
+            default_settings_path(resolved_workspace),
+            default_path_weights=initial_path_weights(resolved_workspace),
         )
-        self.index.configure_facts_snapshot(
-            self.settings.get().facts_snapshot_path, import_if_empty=True
-        )
+        if index is not None:
+            index.configure_facts_snapshot(
+                self.settings.get().facts_snapshot_path, import_if_empty=True
+            )
         self.auth_token = auth_token
         self.reindex_lock = threading.Lock()
         self.state_lock = threading.Lock()
@@ -50,19 +62,120 @@ class SearchServer(ThreadingHTTPServer):
         self.last_reindex_error: str | None = None
         self.reindex_count = 0
         self.initial_index_complete = False
+        self.initialization_phase = "ready" if index is not None else "starting"
+        self.initialization_error: str | None = None
+        self.cached_stats: dict[str, int | float | str | None] = (
+            index.stats()
+            if index is not None
+            else {
+                "workspace": str(resolved_workspace),
+                "files": 0,
+                "chunks": 0,
+                "vectors": 0,
+                "last_indexed_at": None,
+                "facts": 0,
+            }
+        )
+        self.vector_enabled = index is not None and index.embedder is not None
+        # A caller-supplied index preserves the standalone server contract: the
+        # caller decides when it is usable. Managed initialization attaches a
+        # fresh index later and derives snapshot usability from persisted data.
+        self.usable_snapshot = index is not None
         self.stop_event = threading.Event()
         self.settings_changed = threading.Event()
+        self.lifecycle_started = False
+        self.initialization_thread: threading.Thread | None = None
+        self.reindex_thread: threading.Thread | None = None
         self.auto_thread: threading.Thread | None = None
 
     def settings_payload(self) -> dict[str, object]:
         payload = self.settings.payload()
-        directories = discover_workspace_directories(self.index.workspace)
+        directories = discover_workspace_directories(self.workspace)
         payload["workspace_directories"] = directories
         payload["path_weight_exists"] = {
-            prefix: (self.index.workspace / prefix).is_dir()
+            prefix: (self.workspace / prefix).is_dir()
             for prefix in payload["path_weights"]
         }
         return payload
+
+    def available_index(self) -> SearchIndex | None:
+        with self.state_lock:
+            return self.index
+
+    def require_index(self) -> SearchIndex:
+        index = self.available_index()
+        if index is None:
+            raise RuntimeError("search index is not available")
+        return index
+
+    def set_initialization_phase(self, phase: str) -> None:
+        with self.state_lock:
+            if not self.stop_event.is_set():
+                self.initialization_phase = phase
+
+    def start_initialization(
+        self, factory: Callable[[Callable[[str], None]], SearchIndex]
+    ) -> None:
+        """Construct and attach a managed index without blocking the HTTP listener."""
+
+        def worker() -> None:
+            created: SearchIndex | None = None
+            try:
+                self.set_initialization_phase("initializing")
+                if self.stop_event.is_set():
+                    return
+                created = factory(self.set_initialization_phase)
+                created.configure_facts_snapshot(
+                    self.settings.get().facts_snapshot_path,
+                    import_if_empty=True,
+                )
+                stats = created.stats()
+                attached = False
+                with self.state_lock:
+                    if not self.stop_event.is_set():
+                        self.index = created
+                        self.vector_enabled = created.embedder is not None
+                        self.cached_stats = stats
+                        self.usable_snapshot = snapshot_is_usable(stats)
+                        self.initialization_phase = "ready"
+                        self.initialization_error = None
+                        attached = True
+                if not attached:
+                    created.close()
+                    return
+                self.start_lifecycle()
+            except Exception as cause:  # surfaced through constant-time /health
+                if created is not None and self.available_index() is not created:
+                    created.close()
+                with self.state_lock:
+                    if not self.stop_event.is_set():
+                        self.initialization_phase = "error"
+                        self.initialization_error = str(cause)
+
+        thread = threading.Thread(
+            target=worker, daemon=True, name="xangi-search-initialize"
+        )
+        with self.state_lock:
+            if self.stop_event.is_set():
+                return
+            self.initialization_thread = thread
+            thread.start()
+
+    def refresh_cached_stats(self) -> None:
+        index = self.available_index()
+        if index is None:
+            return
+        stats = index.stats()
+        with self.state_lock:
+            if self.index is index:
+                self.cached_stats = stats
+
+    def close_index(self) -> None:
+        with self.state_lock:
+            index = self.index
+            self.index = None
+        if index is not None:
+            index.close()
 
     def search_payload(
         self,
@@ -81,10 +194,12 @@ class SearchServer(ThreadingHTTPServer):
             0.0, min(1.0, defaults.min_score if min_score is None else min_score)
         )
         selected_forgetting = defaults.forgetting if forgetting is None else forgetting
-        with self.index.query_vector_context(
-            query, enabled=selected_mode != "keyword"
-        ) as (query_vector, degraded_reason):
-            payload = self.index.search_payload(
+        index = self.require_index()
+        with index.query_vector_context(query, enabled=selected_mode != "keyword") as (
+            query_vector,
+            degraded_reason,
+        ):
+            payload = index.search_payload(
                 query,
                 mode=selected_mode,
                 limit=selected_limit,
@@ -96,7 +211,7 @@ class SearchServer(ThreadingHTTPServer):
                 forgetting=selected_forgetting,
             )
             rag_finished = time.perf_counter()
-            fact_results = self.index.search_facts(query_vector, limit=3)
+            fact_results = index.search_facts(query_vector, limit=3)
             facts_finished = time.perf_counter()
         rag_files = {result["file_path"] for result in payload["results"]}
         if payload["count"] >= selected_limit:
@@ -105,7 +220,7 @@ class SearchServer(ThreadingHTTPServer):
         else:
             grep_results = [
                 result
-                for result in grep_search(query, self.index.workspace, max_results=5)
+                for result in grep_search(query, self.workspace, max_results=5)
                 if result["file_path"] not in rag_files
             ]
         finished = time.perf_counter()
@@ -138,6 +253,12 @@ class SearchServer(ThreadingHTTPServer):
                 "last_reindex_error": self.last_reindex_error,
                 "reindex_count": self.reindex_count,
                 "initial_index_complete": self.initial_index_complete,
+                "initialization_phase": self.initialization_phase,
+                "initialization_error": self.initialization_error,
+                "index_available": self.index is not None,
+                "vector_enabled": self.vector_enabled,
+                "usable_snapshot": self.usable_snapshot,
+                "stats": dict(self.cached_stats),
             }
 
     def start_reindex(self, source: str) -> bool:
@@ -145,6 +266,10 @@ class SearchServer(ThreadingHTTPServer):
             return False
         started_at = time.time()
         with self.state_lock:
+            index = self.index
+            if self.stop_event.is_set() or index is None:
+                self.reindex_lock.release()
+                return False
             self.reindex_in_progress = True
             self.reindex_source = source
             self.reindex_started_at = started_at
@@ -152,8 +277,10 @@ class SearchServer(ThreadingHTTPServer):
 
         def worker() -> None:
             error: str | None = None
+            stats: dict[str, int | float | str | None] | None = None
             try:
-                self.index.reindex()
+                index.reindex()
+                stats = index.stats()
             except Exception as cause:  # surfaced through /health and doctor
                 error = str(cause)
             finally:
@@ -171,14 +298,30 @@ class SearchServer(ThreadingHTTPServer):
                         self.reindex_count += 1
                         if source == "startup":
                             self.initial_index_complete = True
+                        self.usable_snapshot = True
+                        if stats is not None:
+                            self.cached_stats = stats
                 self.reindex_lock.release()
 
-        threading.Thread(
+        thread = threading.Thread(
             target=worker, daemon=True, name=f"xangi-search-{source}-index"
-        ).start()
+        )
+        with self.state_lock:
+            if self.stop_event.is_set():
+                self.reindex_in_progress = False
+                self.reindex_source = None
+                self.reindex_started_at = None
+                self.reindex_lock.release()
+                return False
+            self.reindex_thread = thread
+            thread.start()
         return True
 
-    def start_lifecycle(self) -> None:
+    def start_lifecycle(self) -> bool:
+        with self.state_lock:
+            if self.stop_event.is_set() or self.lifecycle_started:
+                return False
+            self.lifecycle_started = True
         self.start_reindex("startup")
 
         def auto_reindex() -> None:
@@ -194,14 +337,48 @@ class SearchServer(ThreadingHTTPServer):
                 if settings.auto_reindex:
                     self.start_reindex("auto")
 
-        self.auto_thread = threading.Thread(
+        auto_thread = threading.Thread(
             target=auto_reindex, daemon=True, name="xangi-search-auto-index"
         )
-        self.auto_thread.start()
+        with self.state_lock:
+            if self.stop_event.is_set():
+                return False
+            self.auto_thread = auto_thread
+            auto_thread.start()
+        return True
+
+    def wait_for_workers(self) -> None:
+        """Wait until workers that may access the index have stopped."""
+        while True:
+            with self.state_lock:
+                threads = [
+                    thread
+                    for thread in (
+                        self.initialization_thread,
+                        self.reindex_thread,
+                        self.auto_thread,
+                    )
+                    if thread is not None
+                    and thread is not threading.current_thread()
+                    and thread.is_alive()
+                ]
+            if not threads:
+                return
+            for thread in threads:
+                thread.join()
+
+    def request_stop(self) -> None:
+        with self.state_lock:
+            self.stop_event.set()
+            self.settings_changed.set()
+            self.initialization_phase = "stopping"
+
+    def shutdown(self) -> None:
+        self.request_stop()
+        super().shutdown()
 
     def server_close(self) -> None:
-        self.stop_event.set()
-        self.settings_changed.set()
+        self.request_stop()
         super().server_close()
 
 
@@ -211,12 +388,20 @@ class SearchHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         return
 
-    def _send(self, status: int, body: bytes, content_type: str) -> None:
+    def _send(
+        self,
+        status: int,
+        body: bytes,
+        content_type: str,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         if content_type.startswith("text/html"):
             self.send_header(
                 "Content-Security-Policy",
@@ -227,12 +412,50 @@ class SearchHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _json(self, status: int, payload: dict[str, object]) -> None:
+    def _json(
+        self,
+        status: int,
+        payload: dict[str, object],
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self._send(
             status,
             json.dumps(payload, ensure_ascii=False).encode(),
             "application/json; charset=utf-8",
+            headers,
         )
+
+    def _require_index(self) -> SearchIndex | None:
+        state = self.server.state_payload()
+        index = self.server.available_index()
+        if index is not None and state["usable_snapshot"]:
+            return index
+        if state["index_available"]:
+            if state["reindex_in_progress"]:
+                phase = "initial_reindex"
+                detail = "initial index refresh in progress"
+            elif state["last_reindex_error"]:
+                phase = "initial_reindex_failed"
+                detail = f"initial index failed: {state['last_reindex_error']}"
+            else:
+                phase = "waiting_for_initial_reindex"
+                detail = "waiting for the initial index refresh"
+        else:
+            phase = state["initialization_phase"]
+            detail = state["initialization_error"] or "initialization in progress"
+        self._json(
+            503,
+            {
+                "error": "search index is unavailable",
+                "retryable": not bool(
+                    state["initialization_error"] or state["last_reindex_error"]
+                ),
+                "phase": phase,
+                "detail": detail,
+            },
+            {"Retry-After": "2"},
+        )
+        return None
 
     def _authorized(self) -> bool:
         token = self.server.auth_token
@@ -277,23 +500,25 @@ class SearchHandler(BaseHTTPRequestHandler):
         if parsed.path == "/health":
             settings = self.server.settings.payload()
             state = self.server.state_payload()
-            stats = self.server.index.stats()
-            vector_ready = (
-                self.server.index.embedder is None
-                or stats["files"] == 0
-                or stats["vectors"] > 0
-            )
+            stats = state.pop("stats")
             ready = bool(
-                state["initial_index_complete"]
-                and not state["last_reindex_error"]
-                and vector_ready
+                state["index_available"]
+                and state["usable_snapshot"]
+                and not state["initialization_error"]
             )
-            if state["last_reindex_error"]:
-                detail = f"last reindex failed: {state['last_reindex_error']}"
-            elif not state["initial_index_complete"]:
-                detail = "initial index is still running"
-            elif not vector_ready:
-                detail = "vector search is enabled but embeddings are missing"
+            if state["initialization_error"]:
+                detail = f"initialization failed: {state['initialization_error']}"
+            elif not state["index_available"]:
+                detail = f"initialization phase: {state['initialization_phase']}"
+            elif state["last_reindex_error"]:
+                prefix = (
+                    "ready; last refresh failed" if ready else "initial index failed"
+                )
+                detail = f"{prefix}: {state['last_reindex_error']}"
+            elif not state["usable_snapshot"]:
+                detail = "no usable index snapshot; initial index is still running"
+            elif state["reindex_in_progress"]:
+                detail = "ready; index refresh is running"
             else:
                 detail = "ready"
             self._json(
@@ -309,10 +534,10 @@ class SearchHandler(BaseHTTPRequestHandler):
                         "workspace.ui",
                         "workspace.facts",
                     ],
-                    "vector_enabled": self.server.index.embedder is not None,
                     "auto_reindex": settings["auto_reindex"],
                     "reindex_interval_seconds": settings["reindex_interval_seconds"],
                     "ready": ready,
+                    "degraded": bool(ready and state["last_reindex_error"]),
                     "detail": detail,
                     **state,
                     **stats,
@@ -323,10 +548,16 @@ class SearchHandler(BaseHTTPRequestHandler):
             self._json(200, self.server.settings_payload())
             return
         if parsed.path == "/facts":
-            facts = self.server.index.list_facts()
+            index = self._require_index()
+            if index is None:
+                return
+            facts = index.list_facts()
             self._json(200, {"count": len(facts), "facts": facts})
             return
         if parsed.path == "/facts/similar":
+            index = self._require_index()
+            if index is None:
+                return
             params = parse_qs(parsed.query)
             query = (params.get("q") or [""])[0].strip()
             if not query:
@@ -334,7 +565,7 @@ class SearchHandler(BaseHTTPRequestHandler):
                 return
             limit = max(1, min(30, int((params.get("k") or ["3"])[0])))
             started = time.perf_counter()
-            results = self.server.index.find_similar_facts(query, limit)
+            results = index.find_similar_facts(query, limit)
             self._json(
                 200,
                 {
@@ -346,6 +577,8 @@ class SearchHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/search":
+            if self._require_index() is None:
+                return
             params = parse_qs(parsed.query)
             query = (params.get("q") or [""])[0].strip()
             if not query:
@@ -376,8 +609,8 @@ class SearchHandler(BaseHTTPRequestHandler):
         if parsed.path == "/file":
             requested = (parse_qs(parsed.query).get("path") or [""])[0]
             try:
-                target = (self.server.index.workspace / requested).resolve()
-                target.relative_to(self.server.index.workspace)
+                target = (self.server.workspace / requested).resolve()
+                target.relative_to(self.server.workspace)
                 if not target.is_file() or target.stat().st_size > 100 * 1024:
                     raise ValueError
                 body = target.read_text(encoding="utf-8").encode()
@@ -394,16 +627,18 @@ class SearchHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         fact_match = re.fullmatch(r"/facts/(\d+)", parsed.path)
         if fact_match:
+            index = self._require_index()
+            if index is None:
+                return
             try:
-                result = self.server.index.update_fact(
-                    int(fact_match.group(1)), self._json_body()
-                )
+                result = index.update_fact(int(fact_match.group(1)), self._json_body())
             except ValueError as error:
                 self._json(400, {"error": str(error)})
                 return
             if result is None:
                 self._json(404, {"error": "fact not found"})
                 return
+            self.server.refresh_cached_stats()
             self._json(200, {"status": "ok", "result": result})
             return
         if parsed.path != "/settings":
@@ -411,11 +646,14 @@ class SearchHandler(BaseHTTPRequestHandler):
             return
         try:
             body = self._json_body()
+            index = self._require_index()
+            if index is None:
+                return
             if "facts_snapshot_path" in body:
                 candidate = validate_facts_snapshot_path(body["facts_snapshot_path"])
-                self.server.index.validate_facts_snapshot_location(candidate)
+                index.validate_facts_snapshot_location(candidate)
             settings = self.server.settings.update(body)
-            self.server.index.configure_facts_snapshot(settings.facts_snapshot_path)
+            index.configure_facts_snapshot(settings.facts_snapshot_path)
         except ValueError as error:
             self._json(400, {"error": str(error)})
             return
@@ -430,6 +668,8 @@ class SearchHandler(BaseHTTPRequestHandler):
             return
         parsed = urlparse(self.path)
         if parsed.path == "/agent":
+            if self._require_index() is None:
+                return
             try:
                 body = self._json_body()
                 if body.get("schemaVersion") != 1:
@@ -459,6 +699,9 @@ class SearchHandler(BaseHTTPRequestHandler):
             self._json(200, {"schemaVersion": 1, "result": result})
             return
         if parsed.path in {"/facts", "/extract"}:
+            index = self._require_index()
+            if index is None:
+                return
             try:
                 body = self._json_body()
                 facts = body.get("facts")
@@ -466,7 +709,8 @@ class SearchHandler(BaseHTTPRequestHandler):
                     raise ValueError("facts must be a non-empty array")
                 if not all(isinstance(fact, dict) for fact in facts):
                     raise ValueError("facts entries must be objects")
-                results = self.server.index.add_facts(facts)
+                results = index.add_facts(facts)
+                self.server.refresh_cached_stats()
             except ValueError as error:
                 self._json(400, {"error": str(error)})
                 return
@@ -475,12 +719,14 @@ class SearchHandler(BaseHTTPRequestHandler):
                 {
                     "status": "ok",
                     "results": results,
-                    "total_facts": self.server.index.stats()["facts"],
+                    "total_facts": self.server.state_payload()["stats"]["facts"],
                 },
             )
             return
         if parsed.path != "/reindex":
             self._json(404, {"error": "not found"})
+            return
+        if self._require_index() is None:
             return
         if not self.server.start_reindex("manual"):
             self._json(409, {"error": "reindex already in progress"})
@@ -494,7 +740,11 @@ class SearchHandler(BaseHTTPRequestHandler):
         if not match:
             self._json(404, {"error": "not found"})
             return
-        result = self.server.index.delete_fact(int(match.group(1)))
+        index = self._require_index()
+        if index is None:
+            return
+        result = index.delete_fact(int(match.group(1)))
+        self.server.refresh_cached_stats()
         if result is None:
             self._json(404, {"error": "fact not found"})
             return
@@ -525,6 +775,10 @@ def timestamp(value: float | None) -> str | None:
     if value is None:
         return None
     return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+
+
+def snapshot_is_usable(stats: dict[str, int | float | str | None]) -> bool:
+    return bool(stats.get("files") or stats.get("facts"))
 
 
 WEB_URL_PATTERN = re.compile(r'https?://[^\s<>"\'、。！？，；：「」『』【】〈〉《》]+')
@@ -837,4 +1091,5 @@ def serve(index: SearchIndex, host: str, port: int) -> None:
         server.serve_forever()
     finally:
         server.server_close()
-        index.close()
+        server.wait_for_workers()
+        server.close_index()

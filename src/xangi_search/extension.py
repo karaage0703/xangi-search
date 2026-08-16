@@ -6,6 +6,7 @@ import os
 import signal
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from .index import SearchIndex, SentenceTransformerEmbedder
@@ -32,21 +33,17 @@ def serve_managed(workspace: Path, no_vector: bool) -> None:
         raise RuntimeError("XANGI_EXTENSION_AUTH_TOKEN is required")
 
     resolved_workspace = workspace.expanduser().resolve()
-    index = SearchIndex(resolved_workspace, embedder=load_embedder(no_vector))
-    server = SearchServer(("127.0.0.1", 0), index, auth_token=token)
-    server.start_lifecycle()
+    server = SearchServer(
+        ("127.0.0.1", 0), None, auth_token=token, workspace=resolved_workspace
+    )
 
     shutdown_requested = threading.Event()
 
     def request_shutdown() -> None:
         if shutdown_requested.is_set():
             return
+        server.request_stop()
         shutdown_requested.set()
-        threading.Thread(
-            target=server.shutdown,
-            daemon=True,
-            name="xangi-search-shutdown",
-        ).start()
 
     def watch_parent() -> None:
         try:
@@ -61,6 +58,13 @@ def serve_managed(workspace: Path, no_vector: bool) -> None:
         daemon=True,
         name="xangi-search-parent-watch",
     ).start()
+
+    server_thread = threading.Thread(
+        target=server.serve_forever,
+        daemon=True,
+        name="xangi-search-http",
+    )
+    server_thread.start()
 
     print(
         json.dumps(
@@ -77,11 +81,22 @@ def serve_managed(workspace: Path, no_vector: bool) -> None:
         flush=True,
     )
 
+    def build_index(set_phase: Callable[[str], None]) -> SearchIndex:
+        set_phase("loading_embedder")
+        embedder = load_embedder(no_vector)
+        set_phase("loading_index")
+        return SearchIndex(resolved_workspace, embedder=embedder)
+
+    server.start_initialization(build_index)
+
     try:
-        server.serve_forever()
+        shutdown_requested.wait()
     finally:
+        server.shutdown()
+        server_thread.join(timeout=2)
         server.server_close()
-        index.close()
+        server.wait_for_workers()
+        server.close_index()
 
 
 def main() -> None:

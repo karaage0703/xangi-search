@@ -15,8 +15,10 @@ xangi extension start xangi-search
 xangi extension doctor xangi-search
 ```
 
-初回indexはバックグラウンドで作成されます。`doctor`が成功したら、xangiのExtensions画面で
-`xangi-search`の`Open`を押します。詳しい導入手順は
+processは先に起動し、埋め込みmodelとindexをバックグラウンドで読み込みます。
+`xangi extension start`の成功はHTTPの起動完了を表し、検索準備の完了は
+`xangi extension doctor xangi-search`または`GET /health`の`ready: true`で確認します。
+準備ができたら、xangiのExtensions画面で`xangi-search`の`Open`を押します。詳しい導入手順は
 [セットアップガイド](../XANGI_SETUP.md)を参照してください。
 
 ## Web UI
@@ -76,8 +78,13 @@ vector依存を使わない軽量構成では、セットアップを`uv sync`�
 
 ### 初回indexが終わらない
 
-`xangi extension doctor xangi-search`を実行し、進捗またはエラーを確認します。`start`の成功は
-index完了を意味しません。
+`xangi extension doctor xangi-search`を実行し、`initialization_phase`と
+`initialization_error`を確認します。低速なCPU、cold cache、大きなindexでは初期化に30秒以上
+かかってもprocessは停止されません。準備中の検索requestはHTTP 503と`Retry-After: 2`を返します。
+`start`の成功はindex完了を意味しません。
+
+既存indexがある場合は起動時更新中も`ready: true`で検索できます。更新に失敗した場合も既存indexを
+使い続け、`degraded: true`と`last_reindex_error`で失敗内容を確認できます。
 
 ### 意味検索が使えない
 

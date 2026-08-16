@@ -26,6 +26,33 @@ User / Agent → xangi → same-origin proxy → xangi-search → Workspace
 固定port、PID file、manifest内のURLは使いません。親processがstdinを閉じると子processも
 終了します。ブラウザとAIエージェントはxangiのsame-origin proxy経由でアクセスします。
 
+managed processはHTTP listenerを先にbindし、既存protocolの`ready` eventを出してから、
+埋め込みmodelと`SearchIndex`をbackgroundで初期化します。この`ready`は「HTTPで状態確認
+できる」というtransportの準備完了で、検索indexの準備完了とは別です。`GET /health`は
+SQLiteを読まず、memory上の状態だけを返します。
+
+- `initialization_phase`: `starting`、`initializing`、`loading_embedder`、
+  `loading_index`、`ready`、`error`、`stopping`のいずれか
+- `initialization_error`: 初期化失敗の内容。成功時は`null`
+- `index_available`: 検索requestを処理できるindexがattach済みか
+- `usable_snapshot`: 検索に使える既存snapshotまたは正常に更新したindexがあるか
+- `ready`: 利用可能なsnapshotがあり、検索requestを処理できるか
+
+利用可能なsnapshotが未準備の間も`/health`、`/ui`、`/settings`（GET）、`/file`は応答します。
+検索、FACT、設定変更、reindexなどindex依存endpointはHTTP 503と`Retry-After: 2`を返すため、
+呼び出し側はprocessを落とさず再試行できます。停止が初期化完了と競合した場合は、完成したindexを
+attachせずcloseします。
+503 responseの`phase`はmodel/index読込中のphaseに加え、初回reindex中を`initial_reindex`、
+その失敗を`initial_reindex_failed`として区別します。
+
+既存の利用可能なsnapshotは、起動時refreshの実行中も検索へ使います。refreshが失敗しても
+`ready: true`を保ち、`degraded: true`と`last_reindex_error`で更新失敗を示します。新規DBは
+最初のreindexが成功するまで`ready: false`です。
+
+shutdown時は新しいreindexを受け付けず、初期化・reindex・自動更新threadの終了を待ってから
+SQLiteをcloseします。これにより、初期化完了直後やreindex中の停止でもclose済みconnectionへ
+workerが触れません。
+
 ## 検索処理
 
 indexの正本はSQLiteです。標準のHybrid検索は、埋め込みによる意味検索とSQLite FTS5の
@@ -35,8 +62,8 @@ indexの正本はSQLiteです。標準のHybrid検索は、埋め込みによる
 最低関連度、任意の時間減衰を最終scoreへ反映します。埋め込み行列はmemoryへcacheし、queryごとに
 SQLiteから全vectorを読み直しません。
 
-起動時と設定された間隔で差分indexを行います。既存indexがある場合は先に検索可能にし、
-起動時の更新はバックグラウンドで進めます。
+起動時と設定された間隔で差分indexを行います。`SearchIndex`がattachされた時点で既存indexは
+検索可能になり、起動時の更新はバックグラウンドで進めます。
 
 ## FACT
 
