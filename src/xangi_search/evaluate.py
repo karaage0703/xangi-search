@@ -43,7 +43,9 @@ def percentile(values: list[float], percentage: float) -> float:
     return ordered[index]
 
 
-def evaluate(index: SearchIndex, queries: list[EvaluationQuery], *, mode: str, k: int) -> dict[str, object]:
+def evaluate(
+    index: SearchIndex, queries: list[EvaluationQuery], *, mode: str, k: int
+) -> dict[str, object]:
     recalls: list[float] = []
     reciprocal_ranks: list[float] = []
     latencies: list[float] = []
@@ -57,7 +59,10 @@ def evaluate(index: SearchIndex, queries: list[EvaluationQuery], *, mode: str, k
         relevant = set(item.relevant)
         hits = relevant.intersection(returned)
         recall = len(hits) / len(relevant)
-        rank = next((position for position, path in enumerate(returned, 1) if path in relevant), 0)
+        rank = next(
+            (position for position, path in enumerate(returned, 1) if path in relevant),
+            0,
+        )
         reciprocal_rank = 1 / rank if rank else 0.0
         recalls.append(recall)
         reciprocal_ranks.append(reciprocal_rank)

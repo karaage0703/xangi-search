@@ -5,8 +5,8 @@ import json
 import sys
 from pathlib import Path
 
-from .index import SearchIndex, SentenceTransformerEmbedder
 from .evaluate import evaluate, load_queries
+from .index import SearchIndex, SentenceTransformerEmbedder
 from .server import serve
 
 
@@ -33,11 +33,15 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("index")
     search = subparsers.add_parser("search")
     search.add_argument("query")
-    search.add_argument("--mode", choices=["hybrid", "vector", "keyword"], default="hybrid")
+    search.add_argument(
+        "--mode", choices=["hybrid", "vector", "keyword"], default="hybrid"
+    )
     search.add_argument("--limit", type=int, default=8)
     evaluation = subparsers.add_parser("evaluate")
     evaluation.add_argument("--queries", type=Path, required=True)
-    evaluation.add_argument("--mode", choices=["hybrid", "vector", "keyword"], default="hybrid")
+    evaluation.add_argument(
+        "--mode", choices=["hybrid", "vector", "keyword"], default="hybrid"
+    )
     evaluation.add_argument("--k", type=int, default=5)
     serve_parser = subparsers.add_parser("serve")
     serve_parser.add_argument("--host", default="127.0.0.1")

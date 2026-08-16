@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+if [ "${XANGI_SEARCH_NO_VECTOR:-}" = "true" ]; then
+  exec uv sync --frozen
+fi
+
+exec uv sync --frozen --extra vector
