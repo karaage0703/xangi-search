@@ -19,6 +19,7 @@ class SearchSettings:
     path_weights: dict[str, float] = field(default_factory=dict)
     default_path_weight: float = 1.0
     forgetting: bool = False
+    facts_snapshot_path: str = "knowledge/rag_facts.md"
 
 
 class SettingsStore:
@@ -100,6 +101,9 @@ def validate_settings(
         payload.get("default_path_weight", 1.0), "default_path_weight"
     )
     forgetting = payload.get("forgetting", False)
+    facts_snapshot_path = validate_facts_snapshot_path(
+        payload.get("facts_snapshot_path", "knowledge/rag_facts.md")
+    )
     if mode not in {"hybrid", "vector", "keyword"}:
         raise ValueError("mode must be hybrid, vector, or keyword")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 30:
@@ -127,7 +131,33 @@ def validate_settings(
         path_weights=path_weights,
         default_path_weight=default_path_weight,
         forgetting=forgetting,
+        facts_snapshot_path=facts_snapshot_path,
     )
+
+
+def validate_facts_snapshot_path(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError(
+            "facts_snapshot_path must be a workspace-relative Markdown path"
+        )
+    candidate = value.strip().replace("\\", "/")
+    parts = [part for part in candidate.split("/") if part not in {"", "."}]
+    if (
+        not candidate
+        or candidate.startswith("/")
+        or not parts
+        or any(part == ".." for part in parts)
+        or ":" in parts[0]
+    ):
+        raise ValueError(
+            "facts_snapshot_path must be a workspace-relative Markdown path"
+        )
+    normalized = "/".join(parts)
+    if not normalized.lower().endswith(".md"):
+        raise ValueError("facts_snapshot_path must end with .md")
+    if parts[0].lower() in {".git", ".xangi-search"}:
+        raise ValueError("facts_snapshot_path cannot use a protected directory")
+    return normalized
 
 
 def validate_weight(value: object, name: str) -> float:

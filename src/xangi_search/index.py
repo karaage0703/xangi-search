@@ -8,7 +8,9 @@ import re
 import sqlite3
 import threading
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections import OrderedDict
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -110,6 +112,9 @@ BASE_HALF_LIFE = 30
 STRENGTH_PER_ACCESS = 0.5
 NO_DECAY_FILES = {"MEMORY.md", "AGENTS.md", "CLAUDE.md"}
 DATE_PATTERN = re.compile(r"(\d{4})[-_]?(\d{2})[-_]?(\d{2})")
+QUERY_EMBEDDING_CACHE_SIZE = 128
+QUERY_ENCODE_WAIT_SECONDS = 2.0
+DEFAULT_FACTS_SNAPSHOT_PATH = "knowledge/rag_facts.md"
 
 
 @dataclass(frozen=True)
@@ -179,7 +184,13 @@ class SearchIndex:
         workspace: Path,
         db_path: Path | None = None,
         embedder: Callable[..., np.ndarray] | None = None,
+        query_cache_size: int = QUERY_EMBEDDING_CACHE_SIZE,
+        query_encode_wait_seconds: float = QUERY_ENCODE_WAIT_SECONDS,
     ):
+        if query_cache_size < 1:
+            raise ValueError("query_cache_size must be positive")
+        if query_encode_wait_seconds < 0:
+            raise ValueError("query_encode_wait_seconds must not be negative")
         self.workspace = workspace.resolve()
         self.db_path = db_path or default_db_path(self.workspace)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -188,10 +199,17 @@ class SearchIndex:
         self.connection.row_factory = sqlite3.Row
         self._write_lock = threading.RLock()
         self._cache_lock = threading.RLock()
+        self._query_encode_lock = threading.Lock()
+        self._query_cache_lock = threading.Lock()
+        self._vector_search_lock = threading.Lock()
+        self._query_embedding_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+        self.query_cache_size = query_cache_size
+        self.query_encode_wait_seconds = query_encode_wait_seconds
         self._embedding_ids: tuple[int, ...] = ()
         self._embedding_matrix = np.empty((0, 0), dtype=np.float32)
         self._fact_ids: tuple[int, ...] = ()
         self._fact_matrix = np.empty((0, 0), dtype=np.float32)
+        self._facts_snapshot_path = DEFAULT_FACTS_SNAPSHOT_PATH
         self._init_db()
         self._import_legacy_facts_snapshot()
         self._ensure_fact_embeddings()
@@ -304,7 +322,10 @@ class SearchIndex:
                 lower_name = path.name.lower()
                 if relative.parts and relative.parts[0] in DEFAULT_EXCLUDE_ROOTS:
                     continue
-                if relative_posix == "knowledge/rag_facts.md":
+                if relative_posix in {
+                    DEFAULT_FACTS_SNAPSHOT_PATH,
+                    self._facts_snapshot_path,
+                }:
                     continue
                 if lower_name in DEFAULT_EXCLUDE_NAMES or lower_name.endswith(".lock"):
                     continue
@@ -421,9 +442,9 @@ class SearchIndex:
             self._fact_ids = ids
             self._fact_matrix = matrix
 
-    def _import_legacy_facts_snapshot(self) -> None:
+    def _import_legacy_facts_snapshot(self, relative_path: str | None = None) -> None:
         count = self.connection.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
-        snapshot = self.workspace / "knowledge" / "rag_facts.md"
+        snapshot = self.workspace / (relative_path or DEFAULT_FACTS_SNAPSHOT_PATH)
         if count or not snapshot.is_file():
             return
         try:
@@ -468,6 +489,28 @@ class SearchIndex:
         if imported:
             self.connection.commit()
 
+    @property
+    def facts_snapshot_path(self) -> str:
+        return self._facts_snapshot_path
+
+    def configure_facts_snapshot(
+        self, relative_path: str, *, import_if_empty: bool = False
+    ) -> None:
+        normalized = self.validate_facts_snapshot_location(relative_path)
+        previous = self._facts_snapshot_path
+        self._facts_snapshot_path = normalized
+        if import_if_empty:
+            self._import_legacy_facts_snapshot(normalized)
+            self._ensure_fact_embeddings()
+            self._reload_fact_cache()
+        if normalized != previous:
+            self._export_facts_snapshot()
+
+    def validate_facts_snapshot_location(self, relative_path: str) -> str:
+        target = (self.workspace / relative_path).resolve()
+        target.relative_to(self.workspace)
+        return target.relative_to(self.workspace).as_posix()
+
     def _ensure_fact_embeddings(self) -> None:
         if self.embedder is None:
             return
@@ -511,7 +554,44 @@ class SearchIndex:
     def encode_query(self, query: str) -> np.ndarray | None:
         if self.embedder is None:
             return None
-        return np.asarray(self.embedder([query], query=True)[0], dtype=np.float32)
+        with self._query_cache_lock:
+            cached = self._query_embedding_cache.get(query)
+            if cached is not None:
+                self._query_embedding_cache.move_to_end(query)
+                return cached
+        if not self._query_encode_lock.acquire(timeout=self.query_encode_wait_seconds):
+            return None
+        try:
+            with self._query_cache_lock:
+                cached = self._query_embedding_cache.get(query)
+                if cached is not None:
+                    self._query_embedding_cache.move_to_end(query)
+                    return cached
+            vector = np.asarray(self.embedder([query], query=True)[0], dtype=np.float32)
+            with self._query_cache_lock:
+                self._query_embedding_cache[query] = vector
+                self._query_embedding_cache.move_to_end(query)
+                while len(self._query_embedding_cache) > self.query_cache_size:
+                    self._query_embedding_cache.popitem(last=False)
+            return vector
+        finally:
+            self._query_encode_lock.release()
+
+    @contextmanager
+    def query_vector_context(
+        self, query: str, *, enabled: bool = True
+    ) -> Iterator[tuple[np.ndarray | None, str | None]]:
+        if not enabled or self.embedder is None:
+            yield None, None
+            return
+        if not self._vector_search_lock.acquire(timeout=self.query_encode_wait_seconds):
+            yield None, "query_encoder_busy"
+            return
+        try:
+            vector = self.encode_query(query)
+            yield vector, None if vector is not None else "query_encoder_busy"
+        finally:
+            self._vector_search_lock.release()
 
     @staticmethod
     def _fts_query(query: str) -> str:
@@ -520,8 +600,39 @@ class SearchIndex:
             f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens[:12]
         )
 
+    @staticmethod
+    def _fts_fallback_query(query: str, limit: int = 12) -> str:
+        identifiers = re.findall(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,}", query)
+        japanese_runs = re.findall(r"[\u3040-\u30ff\u3400-\u9fff々〆ヵヶー]{3,}", query)
+        trigrams = [
+            run[offset : offset + 3]
+            for run in japanese_runs
+            for offset in range(len(run) - 2)
+        ]
+        anchors = list(dict.fromkeys(identifiers))[:limit]
+        remaining = limit - len(anchors)
+        if remaining > 0 and trigrams:
+            unique_trigrams = list(dict.fromkeys(trigrams))
+            if len(unique_trigrams) <= remaining:
+                anchors.extend(unique_trigrams)
+            elif remaining == 1:
+                anchors.append(unique_trigrams[len(unique_trigrams) // 2])
+            else:
+                anchors.extend(
+                    unique_trigrams[
+                        round(index * (len(unique_trigrams) - 1) / (remaining - 1))
+                    ]
+                    for index in range(remaining)
+                )
+        return " OR ".join(f'"{anchor}"' for anchor in anchors)
+
     def _keyword_scores(
-        self, connection: sqlite3.Connection, query: str, limit: int
+        self,
+        connection: sqlite3.Connection,
+        query: str,
+        limit: int,
+        *,
+        retry_on_empty: bool = True,
     ) -> dict[int, float]:
         expression = self._fts_query(query)
         if not expression:
@@ -531,6 +642,15 @@ class SearchIndex:
             "WHERE chunks_fts MATCH ? ORDER BY rank LIMIT ?",
             (expression, max(limit * 50, 200)),
         ).fetchall()
+        if not rows and retry_on_empty:
+            fallback = self._fts_fallback_query(query)
+            if fallback and fallback != expression:
+                rows = connection.execute(
+                    "SELECT rowid, bm25(chunks_fts, 2.0, 1.0) AS rank "
+                    "FROM chunks_fts WHERE chunks_fts MATCH ? "
+                    "ORDER BY rank LIMIT ?",
+                    (fallback, max(limit * 50, 200)),
+                ).fetchall()
         if not rows:
             return {}
         raw = {int(row["rowid"]): max(0.0, -float(row["rank"])) for row in rows}
@@ -625,6 +745,7 @@ class SearchIndex:
         path_weights: Mapping[str, float] | None = None,
         default_path_weight: float = 1.0,
         query_vector: np.ndarray | None = None,
+        allow_query_encoding: bool = True,
         forgetting: bool = False,
         timings: dict[str, float] | None = None,
     ) -> list[SearchResult]:
@@ -634,13 +755,20 @@ class SearchIndex:
         with self._read_connection() as connection:
             started = time.perf_counter()
             keyword = (
-                self._keyword_scores(connection, query, limit)
+                self._keyword_scores(
+                    connection,
+                    query,
+                    limit,
+                    retry_on_empty=(mode == "keyword" or self.embedder is None),
+                )
                 if mode != "vector"
                 else {}
             )
             keyword_finished = time.perf_counter()
             vector = (
-                self._vector_scores(query, query_vector) if mode != "keyword" else {}
+                self._vector_scores(query, query_vector)
+                if mode != "keyword" and allow_query_encoding
+                else {}
             )
             if vector:
                 vector = dict(
@@ -977,7 +1105,7 @@ class SearchIndex:
             if fact["source_file"]:
                 lines.append(f"- source_file: {fact['source_file']}")
             lines.extend(["", str(fact["text"]), ""])
-        target = self.workspace / "knowledge" / "rag_facts.md"
+        target = self.workspace / self._facts_snapshot_path
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(".md.tmp")
         temporary.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")

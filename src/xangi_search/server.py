@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import re
@@ -14,7 +15,11 @@ from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 from . import __version__
 from .index import DEFAULT_EXCLUDE_PARTS, DEFAULT_EXCLUDE_ROOTS, SearchIndex
-from .settings import SettingsStore, default_settings_path
+from .settings import (
+    SettingsStore,
+    default_settings_path,
+    validate_facts_snapshot_path,
+)
 
 
 class SearchServer(ThreadingHTTPServer):
@@ -23,6 +28,7 @@ class SearchServer(ThreadingHTTPServer):
         address: tuple[str, int],
         index: SearchIndex,
         settings: SettingsStore | None = None,
+        auth_token: str | None = None,
     ):
         super().__init__(address, SearchHandler)
         self.index = index
@@ -30,6 +36,10 @@ class SearchServer(ThreadingHTTPServer):
             default_settings_path(index.workspace),
             default_path_weights=initial_path_weights(index.workspace),
         )
+        self.index.configure_facts_snapshot(
+            self.settings.get().facts_snapshot_path, import_if_empty=True
+        )
+        self.auth_token = auth_token
         self.reindex_lock = threading.Lock()
         self.state_lock = threading.Lock()
         self.reindex_in_progress = False
@@ -71,22 +81,23 @@ class SearchServer(ThreadingHTTPServer):
             0.0, min(1.0, defaults.min_score if min_score is None else min_score)
         )
         selected_forgetting = defaults.forgetting if forgetting is None else forgetting
-        query_vector = (
-            self.index.encode_query(query) if selected_mode != "keyword" else None
-        )
-        payload = self.index.search_payload(
-            query,
-            mode=selected_mode,
-            limit=selected_limit,
-            min_score=selected_min_score,
-            path_weights=defaults.path_weights,
-            default_path_weight=defaults.default_path_weight,
-            query_vector=query_vector,
-            forgetting=selected_forgetting,
-        )
-        rag_finished = time.perf_counter()
-        fact_results = self.index.search_facts(query_vector, limit=3)
-        facts_finished = time.perf_counter()
+        with self.index.query_vector_context(
+            query, enabled=selected_mode != "keyword"
+        ) as (query_vector, degraded_reason):
+            payload = self.index.search_payload(
+                query,
+                mode=selected_mode,
+                limit=selected_limit,
+                min_score=selected_min_score,
+                path_weights=defaults.path_weights,
+                default_path_weight=defaults.default_path_weight,
+                query_vector=query_vector,
+                allow_query_encoding=degraded_reason is None,
+                forgetting=selected_forgetting,
+            )
+            rag_finished = time.perf_counter()
+            fact_results = self.index.search_facts(query_vector, limit=3)
+            facts_finished = time.perf_counter()
         rag_files = {result["file_path"] for result in payload["results"]}
         if payload["count"] >= selected_limit:
             grep_results: list[dict[str, str]] = []
@@ -111,6 +122,9 @@ class SearchServer(ThreadingHTTPServer):
         payload["grep_results"] = grep_results
         payload["grep_count"] = len(grep_results)
         payload["forgetting"] = selected_forgetting
+        if degraded_reason:
+            payload["degraded"] = True
+            payload["degraded_reason"] = degraded_reason
         return payload
 
     def state_payload(self) -> dict[str, object]:
@@ -220,6 +234,20 @@ class SearchHandler(BaseHTTPRequestHandler):
             "application/json; charset=utf-8",
         )
 
+    def _authorized(self) -> bool:
+        token = self.server.auth_token
+        if token is None:
+            return True
+        supplied = self.headers.get("Authorization", "")
+        expected = f"Bearer {token}"
+        return hmac.compare_digest(supplied, expected)
+
+    def _require_authorization(self) -> bool:
+        if self._authorized():
+            return True
+        self._json(401, {"error": "unauthorized"})
+        return False
+
     def _json_body(self) -> dict[str, object]:
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -236,6 +264,8 @@ class SearchHandler(BaseHTTPRequestHandler):
         return value
 
     def do_GET(self) -> None:
+        if not self._require_authorization():
+            return
         parsed = urlparse(self.path)
         if parsed.path in {"/", "/ui"}:
             self._send(
@@ -246,6 +276,26 @@ class SearchHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/health":
             settings = self.server.settings.payload()
+            state = self.server.state_payload()
+            stats = self.server.index.stats()
+            vector_ready = (
+                self.server.index.embedder is None
+                or stats["files"] == 0
+                or stats["vectors"] > 0
+            )
+            ready = bool(
+                state["initial_index_complete"]
+                and not state["last_reindex_error"]
+                and vector_ready
+            )
+            if state["last_reindex_error"]:
+                detail = f"last reindex failed: {state['last_reindex_error']}"
+            elif not state["initial_index_complete"]:
+                detail = "initial index is still running"
+            elif not vector_ready:
+                detail = "vector search is enabled but embeddings are missing"
+            else:
+                detail = "ready"
             self._json(
                 200,
                 {
@@ -262,8 +312,10 @@ class SearchHandler(BaseHTTPRequestHandler):
                     "vector_enabled": self.server.index.embedder is not None,
                     "auto_reindex": settings["auto_reindex"],
                     "reindex_interval_seconds": settings["reindex_interval_seconds"],
-                    **self.server.state_payload(),
-                    **self.server.index.stats(),
+                    "ready": ready,
+                    "detail": detail,
+                    **state,
+                    **stats,
                 },
             )
             return
@@ -337,6 +389,8 @@ class SearchHandler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def do_PUT(self) -> None:
+        if not self._require_authorization():
+            return
         parsed = urlparse(self.path)
         fact_match = re.fullmatch(r"/facts/(\d+)", parsed.path)
         if fact_match:
@@ -356,14 +410,24 @@ class SearchHandler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
             return
         try:
-            self.server.settings.update(self._json_body())
+            body = self._json_body()
+            if "facts_snapshot_path" in body:
+                candidate = validate_facts_snapshot_path(body["facts_snapshot_path"])
+                self.server.index.validate_facts_snapshot_location(candidate)
+            settings = self.server.settings.update(body)
+            self.server.index.configure_facts_snapshot(settings.facts_snapshot_path)
         except ValueError as error:
             self._json(400, {"error": str(error)})
+            return
+        except OSError as error:
+            self._json(500, {"error": f"could not write facts snapshot: {error}"})
             return
         self.server.settings_changed.set()
         self._json(200, self.server.settings_payload())
 
     def do_POST(self) -> None:
+        if not self._require_authorization():
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/agent":
             try:
@@ -424,6 +488,8 @@ class SearchHandler(BaseHTTPRequestHandler):
         self._json(202, {"status": "accepted"})
 
     def do_DELETE(self) -> None:
+        if not self._require_authorization():
+            return
         match = re.fullmatch(r"/facts/(\d+)", urlparse(self.path).path)
         if not match:
             self._json(404, {"error": "not found"})
@@ -704,13 +770,13 @@ def python_grep_search(
         ".zip",
     }
     results: list[dict[str, str]] = []
-    for root, directories, files in os.walk(workspace, followlinks=False):
+    for root, directories, filenames in os.walk(workspace, followlinks=False):
         directories[:] = [
             name
             for name in directories
             if name not in excluded_directories and not (Path(root) / name).is_symlink()
         ]
-        for name in files:
+        for name in filenames:
             path = Path(root) / name
             lower_name = name.lower()
             if (

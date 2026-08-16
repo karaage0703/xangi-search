@@ -3,9 +3,9 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>xangi search</title>
+    <title>xangi-search</title>
     <style>
-      /* Hallmark · pre-emit critique: P5 H5 E4 S5 R5 V4
+      /* Hallmark · pre/post-emit critique: P5 H5 E4 S5 R5 V4
        * genre: modern-minimal · theme: existing xangi · mobile: 320/375/414/768
        */
       :root {
@@ -58,9 +58,9 @@
       [hidden] { display: none !important; }
       html, body { width: 100%; min-width: 320px; min-height: 100%; margin: 0; overflow-x: clip; }
       body { background: var(--surface-muted); }
-      button, input, select { font: inherit; }
+      button, input, select, textarea { font: inherit; }
       button, a { -webkit-tap-highlight-color: transparent; }
-      button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
+      button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
         outline: 2px solid var(--accent); outline-offset: 2px;
       }
 
@@ -93,6 +93,12 @@
       .button:active:not(:disabled) { transform: translateY(1px); }
       .button:disabled { cursor: wait; opacity: .55; }
 
+      .tabs { display: flex; gap: 4px; margin-top: 20px; border-bottom: 1px solid var(--hairline); }
+      .tab { min-height: 43px; border: 0; border-bottom: 2px solid transparent; padding: 9px 14px;
+        color: var(--ink-muted); background: transparent; font-size: 13px; font-weight: 700; cursor: pointer; }
+      .tab:hover { color: var(--ink); background: var(--hover); }
+      .tab[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--accent-ink); }
+
       .search-panel { margin-top: 24px; }
       .search-box { position: relative; }
       .search-input { width: 100%; min-height: 56px; border: 1px solid var(--border); border-radius: 10px;
@@ -124,6 +130,25 @@
       .empty h2 { margin: 0; font-size: 16px; }
       .empty p { margin: 7px 0 0; font-size: 13px; line-height: 1.6; }
 
+      .facts-panel { margin-top: 24px; }
+      .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+      .panel-title { margin: 0; font-size: 19px; }
+      .panel-copy { margin: 5px 0 0; color: var(--ink-muted); font-size: 12px; line-height: 1.55; }
+      .fact-tools { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; margin-top: 16px; }
+      .compact-input { width: 100%; min-width: 0; min-height: 42px; border: 1px solid var(--border);
+        border-radius: 7px; padding: 8px 11px; color: var(--ink); background: var(--surface); }
+      .facts-list { display: grid; gap: 10px; margin-top: 12px; }
+      .fact-card { width: 100%; min-width: 0; border: 1px solid var(--border); border-radius: 9px;
+        padding: 15px 16px; color: var(--ink); background: var(--surface); text-align: left; cursor: pointer; }
+      .fact-card:hover { border-color: var(--accent); background: var(--accent-tint); }
+      .fact-card.inactive { opacity: .62; }
+      .fact-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--ink-muted); font-size: 11px; }
+      .fact-text { margin: 8px 0 0; color: var(--ink-secondary); font-size: 13px; line-height: 1.65;
+        white-space: pre-wrap; overflow-wrap: anywhere; }
+      .fact-source { margin: 8px 0 0; color: var(--ink-muted); font-size: 11px; overflow-wrap: anywhere; }
+      .facts-footer { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--ink-muted); font-size: 12px; }
+      .facts-footer input { width: 17px; height: 17px; accent-color: var(--accent); }
+
       dialog { width: min(620px, calc(100vw - 28px)); max-height: calc(100dvh - 28px); border: 1px solid var(--border);
         border-radius: 12px; padding: 0; color: var(--ink); background: var(--surface); box-shadow: var(--shadow); }
       dialog::backdrop { background: rgb(15 15 15 / 38%); }
@@ -137,8 +162,9 @@
       .field { display: grid; gap: 7px; }
       .field > span, .switch-copy strong { font-size: 13px; font-weight: 700; }
       .field small, .switch-copy small { color: var(--ink-muted); font-size: 11px; line-height: 1.5; }
-      .field input, .field select { width: 100%; min-height: 42px; border: 1px solid var(--border); border-radius: 7px;
+      .field input, .field select, .field textarea { width: 100%; min-height: 42px; border: 1px solid var(--border); border-radius: 7px;
         padding: 8px 10px; color: var(--ink); background: var(--surface); }
+      .field textarea { min-height: 130px; resize: vertical; line-height: 1.55; }
       .weight-fieldset { min-width: 0; margin: 0; border: 1px solid var(--border); border-radius: 8px;
         padding: 14px; }
       .weight-fieldset legend { padding: 0 5px; font-size: 13px; font-weight: 700; }
@@ -160,6 +186,7 @@
       .index-card p { margin: 0 0 11px; color: var(--ink-secondary); font-size: 12px; line-height: 1.55; }
       .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; border-top: 1px solid var(--hairline);
         padding: 15px 20px; }
+      .dialog-actions .danger { margin-right: auto; border-color: var(--danger); color: var(--danger); }
 
       @media (max-width: 620px) {
         .shell { padding: 22px 14px 52px; }
@@ -169,6 +196,8 @@
         .search-input { min-height: 52px; font-size: 16px; }
         .search-meta { align-items: flex-start; flex-direction: column; gap: 3px; }
         .result { padding: 15px; }
+        .panel-head { align-items: flex-start; }
+        .fact-tools { grid-template-columns: 1fr; }
         .weight-row { grid-template-columns: minmax(0, 1fr) 72px 40px; }
         .dialog-actions .button { flex: 1; }
       }
@@ -179,8 +208,8 @@
       <header class="header">
         <div class="header-main">
           <a class="back-link" id="xangiHomeLink" href="/" hidden>← xangiへ戻る</a>
-          <p class="kicker">XANGI SEARCH</p>
-          <h1>xangi search</h1>
+          <p class="kicker">XANGI-SEARCH</p>
+          <h1>xangi-search</h1>
           <p class="subtitle">入力に合わせて、ワークスペース内の関連ファイルをローカルで検索します。</p>
         </div>
         <div class="header-actions">
@@ -189,7 +218,12 @@
         </div>
       </header>
 
-      <section class="search-panel" aria-label="ワークスペース検索">
+      <nav class="tabs" role="tablist" aria-label="表示内容">
+        <button class="tab" id="searchTab" type="button" role="tab" aria-selected="true" aria-controls="searchPanel">検索</button>
+        <button class="tab" id="factsTab" type="button" role="tab" aria-selected="false" aria-controls="factsPanel">FACT</button>
+      </nav>
+
+      <section class="search-panel" id="searchPanel" role="tabpanel" aria-labelledby="searchTab">
         <div class="search-box">
           <input class="search-input" id="query" type="search" autocomplete="off"
             placeholder="キーワードや探したい内容を入力" aria-label="検索語" />
@@ -206,6 +240,27 @@
           <p>文章の意味とキーワードを組み合わせて、ファイル単位で表示します。</p>
         </div>
       </section>
+
+      <section class="facts-panel" id="factsPanel" role="tabpanel" aria-labelledby="factsTab" hidden>
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">FACT</h2>
+            <p class="panel-copy" id="factsSummary">保存済みのFACTを読み込んでいます…</p>
+          </div>
+          <button class="button primary" id="addFactButton" type="button">FACTを追加</button>
+        </div>
+        <div class="fact-tools">
+          <input class="compact-input" id="factFilter" type="search" autocomplete="off"
+            placeholder="内容・出典で絞り込み" aria-label="FACTを絞り込み" />
+        </div>
+        <p class="error" id="factsError" role="alert" hidden></p>
+        <div class="facts-list" id="factsList"></div>
+        <div class="empty" id="factsEmpty" hidden>
+          <h2>FACTはまだありません</h2>
+          <p>覚えておきたい事実を追加すると、検索にも利用できます。</p>
+        </div>
+        <label class="facts-footer"><input id="showInactiveFacts" type="checkbox" />削除済みも表示</label>
+      </section>
     </main>
 
     <dialog id="settingsDialog">
@@ -221,6 +276,10 @@
         <label class="field"><span>表示件数</span><input name="limit" type="number" min="1" max="30" /></label>
         <label class="field"><span>最低関連度</span><input name="min_score" type="number" min="0" max="1" step="0.05" />
           <small>0で候補を広く表示し、数値を上げるほど結果を絞ります。</small>
+        </label>
+        <label class="field"><span>FACT書き出し先</span>
+          <input name="facts_snapshot_path" type="text" autocomplete="off" placeholder="knowledge/rag_facts.md" />
+          <small>ワークスペースからの相対パスです。親ディレクトリがなくても自動作成します。</small>
         </label>
         <fieldset class="weight-fieldset">
           <legend>ディレクトリごとの重み</legend>
@@ -250,12 +309,37 @@
       </div>
     </dialog>
 
+    <dialog id="factDialog">
+      <div class="dialog-head">
+        <h2 id="factDialogTitle">FACTを追加</h2>
+        <button class="icon-button" id="closeFact" type="button" aria-label="閉じる">×</button>
+      </div>
+      <form class="settings-form" id="factForm">
+        <label class="field"><span>内容</span>
+          <textarea name="text" required placeholder="覚えておきたい事実を入力"></textarea>
+        </label>
+        <label class="field"><span>出典ファイル</span>
+          <input name="source_file" type="text" autocomplete="off" placeholder="例: memory/20260816.md" />
+        </label>
+        <label class="field"><span>事実の日付</span>
+          <input name="fact_date" type="date" />
+          <small>出来事に日付がある場合だけ指定します。</small>
+        </label>
+        <p class="error" id="factError" role="alert" hidden></p>
+      </form>
+      <div class="dialog-actions">
+        <button class="button danger" id="deleteFact" type="button" hidden>削除</button>
+        <button class="button" id="cancelFact" type="button">キャンセル</button>
+        <button class="button primary" id="saveFact" type="submit" form="factForm">保存</button>
+      </div>
+    </dialog>
+
     <script>
       const proxyMatch = location.pathname.match(/^\/api\/extensions\/([^/]+)\/ui/);
       const apiBase = proxyMatch ? `/api/extensions/${encodeURIComponent(proxyMatch[1])}/service` : '';
       const endpoint = (path) => `${apiBase}${path}`;
       const $ = (id) => document.getElementById(id);
-      const state = { settings: null, health: null, timer: 0, controller: null };
+      const state = { settings: null, health: null, timer: 0, controller: null, facts: [], editingFactId: null };
       $('xangiHomeLink').hidden = !proxyMatch;
 
       async function json(path, options) {
@@ -270,6 +354,18 @@
       function setError(target, message) {
         target.textContent = message || '';
         target.hidden = !message;
+      }
+
+      function selectTab(name) {
+        const factsSelected = name === 'facts';
+        $('searchTab').setAttribute('aria-selected', String(!factsSelected));
+        $('factsTab').setAttribute('aria-selected', String(factsSelected));
+        $('searchPanel').hidden = factsSelected;
+        $('factsPanel').hidden = !factsSelected;
+        const url = new URL(location.href);
+        if (factsSelected) url.searchParams.set('tab', 'facts'); else url.searchParams.delete('tab');
+        history.replaceState(null, '', url);
+        if (factsSelected) loadFacts();
       }
 
       function updateModeSummary() {
@@ -362,6 +458,7 @@
         form.elements.interval_minutes.value = Math.round(settings.reindex_interval_seconds / 60);
         form.elements.default_path_weight.value = settings.default_path_weight;
         form.elements.forgetting.checked = settings.forgetting;
+        form.elements.facts_snapshot_path.value = settings.facts_snapshot_path;
         renderPathWeights(settings.path_weights, settings.path_weight_exists);
         updateModeSummary();
       }
@@ -409,10 +506,105 @@
 
       async function loadSettings() { populateSettings(await json('/settings')); }
 
+      function visibleFacts() {
+        const needle = $('factFilter').value.trim().toLocaleLowerCase();
+        const showInactive = $('showInactiveFacts').checked;
+        return state.facts.filter((fact) => {
+          if (!showInactive && !fact.is_active) return false;
+          const haystack = `${fact.text}\n${fact.source_file || ''}`.toLocaleLowerCase();
+          return !needle || haystack.includes(needle);
+        });
+      }
+
+      function renderFacts() {
+        const facts = visibleFacts();
+        const activeCount = state.facts.filter((fact) => fact.is_active).length;
+        $('factsSummary').textContent = `${activeCount}件の有効なFACT`;
+        $('factsList').replaceChildren();
+        $('factsEmpty').hidden = facts.length > 0;
+        if (!facts.length) {
+          const filtered = Boolean($('factFilter').value.trim());
+          $('factsEmpty').querySelector('h2').textContent = filtered ? '一致するFACTがありません' : 'FACTはまだありません';
+          $('factsEmpty').querySelector('p').textContent = filtered
+            ? '別の言葉で絞り込んでください。'
+            : '覚えておきたい事実を追加すると、検索にも利用できます。';
+        }
+        for (const fact of facts) {
+          const card = document.createElement('button'); card.type = 'button'; card.className = 'fact-card';
+          if (!fact.is_active) card.classList.add('inactive');
+          const meta = document.createElement('div'); meta.className = 'fact-meta';
+          const id = document.createElement('span'); id.textContent = `#${fact.id}`;
+          const status = document.createElement('span'); status.textContent = fact.is_active ? '有効' : '削除済み';
+          const updated = document.createElement('span');
+          updated.textContent = `更新 ${new Date(fact.updated_at).toLocaleString()}`;
+          meta.append(id, status, updated);
+          if (fact.fact_date) { const date = document.createElement('span'); date.textContent = `日付 ${fact.fact_date}`; meta.append(date); }
+          const text = document.createElement('p'); text.className = 'fact-text'; text.textContent = fact.text;
+          card.append(meta, text);
+          if (fact.source_file) { const source = document.createElement('p'); source.className = 'fact-source'; source.textContent = `出典: ${fact.source_file}`; card.append(source); }
+          card.addEventListener('click', () => openFactDialog(fact));
+          $('factsList').append(card);
+        }
+      }
+
+      async function loadFacts() {
+        setError($('factsError'), '');
+        $('factsSummary').textContent = '保存済みのFACTを読み込んでいます…';
+        try { const payload = await json('/facts'); state.facts = payload.facts || []; renderFacts(); }
+        catch (cause) { setError($('factsError'), cause.message || String(cause)); }
+      }
+
+      function openFactDialog(fact = null) {
+        state.editingFactId = fact?.id ?? null;
+        const form = $('factForm'); form.reset(); setError($('factError'), '');
+        $('factDialogTitle').textContent = fact ? `FACT #${fact.id}を編集` : 'FACTを追加';
+        form.elements.text.value = fact?.text || '';
+        form.elements.source_file.value = fact?.source_file || '';
+        form.elements.fact_date.value = fact?.fact_date || '';
+        $('deleteFact').hidden = !fact || !fact.is_active;
+        $('deleteFact').dataset.confirming = '';
+        $('deleteFact').textContent = '削除';
+        $('factDialog').showModal();
+        form.elements.text.focus();
+      }
+
+      function factPayload(form) {
+        return { text: form.elements.text.value.trim(), source_file: form.elements.source_file.value.trim() || null,
+          fact_date: form.elements.fact_date.value || null };
+      }
+
+      $('searchTab').addEventListener('click', () => selectTab('search'));
+      $('factsTab').addEventListener('click', () => selectTab('facts'));
       $('query').addEventListener('input', scheduleSearch);
       $('clearButton').addEventListener('click', () => { $('query').value = ''; $('query').focus(); searchNow(); });
       $('settingsButton').addEventListener('click', () => { setError($('settingsError'), ''); $('settingsDialog').showModal(); });
       $('addPathWeight').addEventListener('click', () => addPathWeightRow());
+      $('addFactButton').addEventListener('click', () => openFactDialog());
+      $('factFilter').addEventListener('input', renderFacts);
+      $('showInactiveFacts').addEventListener('change', renderFacts);
+      $('closeFact').addEventListener('click', () => $('factDialog').close());
+      $('cancelFact').addEventListener('click', () => $('factDialog').close());
+      $('factForm').addEventListener('submit', async (event) => {
+        event.preventDefault(); const form = event.currentTarget; $('saveFact').disabled = true;
+        setError($('factError'), '');
+        try {
+          const id = state.editingFactId;
+          const path = id === null ? '/facts' : `/facts/${id}`;
+          const body = id === null ? { facts: [factPayload(form)] } : factPayload(form);
+          await json(path, { method: id === null ? 'POST' : 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          $('factDialog').close(); await loadFacts(); await refreshHealth();
+        } catch (cause) { setError($('factError'), cause.message || String(cause)); }
+        finally { $('saveFact').disabled = false; }
+      });
+      $('deleteFact').addEventListener('click', async () => {
+        if (!$('deleteFact').dataset.confirming) {
+          $('deleteFact').dataset.confirming = 'true'; $('deleteFact').textContent = 'もう一度押して削除'; return;
+        }
+        $('deleteFact').disabled = true; setError($('factError'), '');
+        try { await json(`/facts/${state.editingFactId}`, { method: 'DELETE' }); $('factDialog').close(); await loadFacts(); await refreshHealth(); }
+        catch (cause) { setError($('factError'), cause.message || String(cause)); }
+        finally { $('deleteFact').disabled = false; }
+      });
       $('closeSettings').addEventListener('click', () => $('settingsDialog').close());
       $('cancelSettings').addEventListener('click', () => { populateSettings(state.settings); $('settingsDialog').close(); });
       $('settingsForm').addEventListener('submit', async (event) => {
@@ -425,7 +617,8 @@
               reindex_interval_seconds: Number(form.elements.interval_minutes.value) * 60,
               path_weights: collectPathWeights(),
               default_path_weight: Number(form.elements.default_path_weight.value),
-              forgetting: form.elements.forgetting.checked }) });
+              forgetting: form.elements.forgetting.checked,
+              facts_snapshot_path: form.elements.facts_snapshot_path.value.trim() }) });
           populateSettings(settings); $('settingsDialog').close(); searchNow();
         } catch (cause) { setError($('settingsError'), cause.message || String(cause)); }
         finally { $('saveSettings').disabled = false; }
@@ -437,8 +630,9 @@
       });
 
       Promise.all([loadSettings(), refreshHealth()]).then(() => {
-        const initial = new URL(location.href).searchParams.get('q') || '';
+        const url = new URL(location.href); const initial = url.searchParams.get('q') || '';
         $('query').value = initial; if (initial) searchNow();
+        if (url.searchParams.get('tab') === 'facts') selectTab('facts');
       }).catch((cause) => setError($('error'), cause.message || String(cause)));
       setInterval(refreshHealth, 5000);
     </script>

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xangi-search"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local workspace search service for xangi"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,8 +23,23 @@ xangi-search-extension = "xangi_search.extension:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/xangi_search"]
 
+[tool.hatch.build]
+exclude = ["/benchmarks", "/tests"]
+
 [dependency-groups]
-dev = ["pytest>=8.0.0"]
+dev = [
+  "pytest>=8.0.0",
+  "ruff>=0.16,<0.17",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/test_private_benchmarks.py" = ["E402"]

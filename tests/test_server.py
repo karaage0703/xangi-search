@@ -65,8 +65,11 @@ def test_http_contract(tmp_path: Path):
 
         status, page = request(f"{base}/ui")
         assert status == 200
-        assert "xangi search" in page
+        assert "xangi-search" in page
         assert "ディレクトリごとの重み" in page
+        assert 'id="factsTab"' in page
+        assert 'name="facts_snapshot_path"' in page
+        assert "'/facts'" in page
         assert 'id="xangiHomeLink"' in page
         assert "[hidden] { display: none !important; }" in page
 
@@ -87,6 +90,7 @@ def test_http_contract(tmp_path: Path):
             "documents/": True,
             "sources/": True,
         }
+        assert settings["facts_snapshot_path"] == "knowledge/rag_facts.md"
 
         status, payload = request(f"{base}/search?q=hello&mode=keyword&k=5")
         assert status == 200
@@ -179,6 +183,7 @@ def test_settings_are_persisted_and_become_search_defaults(tmp_path: Path):
                 "path_weights": {"hello/": 2.0},
                 "default_path_weight": 0.8,
                 "forgetting": True,
+                "facts_snapshot_path": "exports/facts/current.md",
             },
         )
         assert status == 200
@@ -186,6 +191,9 @@ def test_settings_are_persisted_and_become_search_defaults(tmp_path: Path):
         assert settings["path_weights"] == {"hello/": 2.0}
         assert settings["path_weight_exists"] == {"hello/": False}
         assert settings["forgetting"] is True
+        assert settings["facts_snapshot_path"] == "exports/facts/current.md"
+        assert (tmp_path / "exports" / "facts" / "current.md").is_file()
+        assert not (tmp_path / "knowledge").exists()
         settings_path = tmp_path / ".xangi-search" / "settings.json"
         assert settings_path.is_file()
         assert os.stat(settings_path).st_mode & 0o077 == 0
@@ -195,6 +203,31 @@ def test_settings_are_persisted_and_become_search_defaults(tmp_path: Path):
         assert payload["mode"] == "keyword"
         assert payload["results"][0]["path_weight"] == 0.8
         assert payload["forgetting"] is True
+    finally:
+        server.shutdown()
+        server.server_close()
+        index.close()
+
+
+def test_settings_reject_fact_snapshot_symlink_outside_workspace(tmp_path: Path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    (tmp_path / "outside-link").symlink_to(outside, target_is_directory=True)
+    index = SearchIndex(tmp_path, tmp_path / "index.sqlite3")
+    server = SearchServer(("127.0.0.1", 0), index)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        status, _ = request(
+            f"{base}/settings",
+            "PUT",
+            {"facts_snapshot_path": "outside-link/facts.md"},
+        )
+        assert status == 400
+        status, settings = request(f"{base}/settings")
+        assert status == 200
+        assert settings["facts_snapshot_path"] == "knowledge/rag_facts.md"
     finally:
         server.shutdown()
         server.server_close()
@@ -231,11 +264,19 @@ def test_facts_http_contract_and_search_integration(tmp_path: Path):
     thread.start()
     base = f"http://127.0.0.1:{server.server_port}"
     try:
+        status, settings = request(
+            f"{base}/settings",
+            "PUT",
+            {"facts_snapshot_path": "exports/facts.md"},
+        )
+        assert status == 200
         status, created = request(
             f"{base}/facts", "POST", {"facts": [{"text": "猫の名前はウミ"}]}
         )
         assert status == 200
         fact_id = created["results"][0]["id"]
+        snapshot = tmp_path / "exports" / "facts.md"
+        assert "猫の名前はウミ" in snapshot.read_text(encoding="utf-8")
 
         status, payload = request(f"{base}/search?q={quote('猫')}&mode=hybrid")
         assert status == 200
@@ -255,7 +296,30 @@ def test_facts_http_contract_and_search_integration(tmp_path: Path):
         status, deleted = request(f"{base}/facts/{fact_id}", "DELETE")
         assert status == 200
         assert deleted["result"]["is_active"] == 0
+        assert "猫の名前はソラ" not in snapshot.read_text(encoding="utf-8")
     finally:
         server.shutdown()
         server.server_close()
+        index.close()
+
+
+def test_busy_query_encoder_degrades_explicitly_to_keyword(tmp_path: Path):
+    (tmp_path / "hello.md").write_text("hello searchable", encoding="utf-8")
+    index = SearchIndex(
+        tmp_path,
+        tmp_path / "index.sqlite3",
+        FakeEmbedder(),
+        query_encode_wait_seconds=0.01,
+    )
+    index.reindex()
+    assert index._vector_search_lock.acquire(blocking=False)
+    try:
+        server = SearchServer(("127.0.0.1", 0), index)
+        payload = server.search_payload("hello", mode="hybrid")
+        assert payload["degraded"] is True
+        assert payload["degraded_reason"] == "query_encoder_busy"
+        assert payload["results"][0]["file_path"] == "hello.md"
+        server.server_close()
+    finally:
+        index._vector_search_lock.release()
         index.close()

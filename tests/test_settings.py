@@ -9,13 +9,21 @@ from xangi_search.settings import SettingsStore
 def test_settings_store_reloads_saved_values(tmp_path: Path):
     path = tmp_path / "settings.json"
     store = SettingsStore(path)
-    store.update({"mode": "keyword", "limit": 4, "reindex_interval_seconds": 900})
+    store.update(
+        {
+            "mode": "keyword",
+            "limit": 4,
+            "reindex_interval_seconds": 900,
+            "facts_snapshot_path": "notes/system/facts.md",
+        }
+    )
 
     reloaded = SettingsStore(path).payload()
     assert reloaded["mode"] == "keyword"
     assert reloaded["limit"] == 4
     assert reloaded["reindex_interval_seconds"] == 900
     assert reloaded["path_weights"] == {}
+    assert reloaded["facts_snapshot_path"] == "notes/system/facts.md"
     assert json.loads(path.read_text())["schema_version"] == 1
 
 
@@ -70,3 +78,29 @@ def test_settings_store_rejects_invalid_path_weights(tmp_path: Path, path_weight
     store = SettingsStore(tmp_path / "settings.json")
     with pytest.raises(ValueError):
         store.update({"path_weights": path_weights})
+
+
+@pytest.mark.parametrize(
+    "snapshot_path",
+    [
+        "",
+        "/tmp/facts.md",
+        "../facts.md",
+        "notes/facts.txt",
+        ".git/facts.md",
+        ".xangi-search/facts.md",
+        "C:/facts.md",
+    ],
+)
+def test_settings_store_rejects_unsafe_facts_snapshot_paths(
+    tmp_path: Path, snapshot_path: str
+):
+    store = SettingsStore(tmp_path / "settings.json")
+    with pytest.raises(ValueError):
+        store.update({"facts_snapshot_path": snapshot_path})
+
+
+def test_settings_store_normalizes_facts_snapshot_path(tmp_path: Path):
+    store = SettingsStore(tmp_path / "settings.json")
+    updated = store.update({"facts_snapshot_path": "notes\\system\\facts.md"})
+    assert updated.facts_snapshot_path == "notes/system/facts.md"
