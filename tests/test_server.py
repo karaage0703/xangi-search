@@ -8,6 +8,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 import numpy as np
+import pytest
 
 from xangi_search.index import SearchIndex
 from xangi_search.server import SearchServer
@@ -253,6 +254,324 @@ def test_startup_index_runs_in_background_and_updates_health(tmp_path: Path):
     finally:
         server.server_close()
         index.close()
+
+
+def test_managed_initialization_keeps_health_responsive_and_routes_retryable(
+    tmp_path: Path,
+):
+    release = threading.Event()
+    factory_started = threading.Event()
+    server = SearchServer(("127.0.0.1", 0), None, workspace=tmp_path)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+
+    def factory(set_phase):
+        set_phase("loading_index")
+        factory_started.set()
+        release.wait(timeout=2)
+        return SearchIndex(tmp_path, tmp_path / "index.sqlite3")
+
+    server.start_initialization(factory)
+    assert factory_started.wait(timeout=1)
+    try:
+        started = time.monotonic()
+        status, health = request(f"{base}/health")
+        assert time.monotonic() - started < 0.5
+        assert status == 200
+        assert health["ready"] is False
+        assert health["index_available"] is False
+        assert health["initialization_phase"] == "loading_index"
+        assert health["files"] == 0
+
+        with pytest.raises(HTTPError) as unavailable:
+            urlopen(f"{base}/search?q=hello", timeout=2)
+        assert unavailable.value.code == 503
+        assert unavailable.value.headers["Retry-After"] == "2"
+        payload = json.load(unavailable.value)
+        assert payload == {
+            "error": "search index is unavailable",
+            "retryable": True,
+            "phase": "loading_index",
+            "detail": "initialization in progress",
+        }
+
+        release.set()
+        deadline = time.monotonic() + 2
+        while not server.state_payload()["initial_index_complete"]:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        status, health = request(f"{base}/health")
+        assert status == 200
+        assert health["ready"] is True
+        assert health["index_available"] is True
+        assert health["initialization_phase"] == "ready"
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+        server.close_index()
+
+
+def test_shutdown_prevents_late_managed_index_attach(tmp_path: Path):
+    release = threading.Event()
+    factory_started = threading.Event()
+    closed = threading.Event()
+    created: list[SearchIndex] = []
+    server = SearchServer(("127.0.0.1", 0), None, workspace=tmp_path)
+
+    def factory(set_phase):
+        set_phase("loading_index")
+        factory_started.set()
+        release.wait(timeout=2)
+        index = SearchIndex(tmp_path, tmp_path / "index.sqlite3")
+        original_close = index.close
+
+        def record_close():
+            original_close()
+            closed.set()
+
+        index.close = record_close
+        created.append(index)
+        return index
+
+    server.start_initialization(factory)
+    assert factory_started.wait(timeout=1)
+    server.server_close()
+    release.set()
+    deadline = time.monotonic() + 2
+    while not created:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert closed.wait(timeout=2)
+    assert server.available_index() is None
+    assert server.state_payload()["initialization_phase"] == "stopping"
+
+
+def test_health_uses_cached_stats_instead_of_querying_sqlite(tmp_path: Path):
+    index = SearchIndex(tmp_path, tmp_path / "index.sqlite3")
+    server = SearchServer(("127.0.0.1", 0), index)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def fail_if_called():
+        raise AssertionError("health must not query SQLite stats")
+
+    index.stats = fail_if_called
+    try:
+        status, health = request(f"http://127.0.0.1:{server.server_port}/health")
+        assert status == 200
+        assert health["files"] == 0
+    finally:
+        server.shutdown()
+        server.server_close()
+        index.close()
+
+
+def test_managed_initialization_error_remains_observable(tmp_path: Path):
+    server = SearchServer(("127.0.0.1", 0), None, workspace=tmp_path)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def factory(set_phase):
+        set_phase("loading_index")
+        raise RuntimeError("broken index")
+
+    server.start_initialization(factory)
+    deadline = time.monotonic() + 2
+    while server.state_payload()["initialization_phase"] != "error":
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        status, health = request(f"{base}/health")
+        assert status == 200
+        assert health["ready"] is False
+        assert health["initialization_error"] == "broken index"
+        assert health["detail"] == "initialization failed: broken index"
+
+        with pytest.raises(HTTPError) as unavailable:
+            urlopen(f"{base}/search?q=hello", timeout=2)
+        assert unavailable.value.code == 503
+        assert unavailable.value.headers["Retry-After"] == "2"
+        assert json.load(unavailable.value)["retryable"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_existing_snapshot_stays_ready_during_and_after_failed_refresh(tmp_path: Path):
+    (tmp_path / "existing.md").write_text("usable snapshot", encoding="utf-8")
+    index = SearchIndex(tmp_path, tmp_path / "index.sqlite3")
+    index.reindex()
+    refresh_started = threading.Event()
+    release_refresh = threading.Event()
+
+    def failing_refresh():
+        refresh_started.set()
+        release_refresh.wait(timeout=2)
+        raise RuntimeError("refresh failed")
+
+    index.reindex = failing_refresh
+    server = SearchServer(("127.0.0.1", 0), index)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    server.start_lifecycle()
+    assert refresh_started.wait(timeout=1)
+    try:
+        status, health = request(f"{base}/health")
+        assert status == 200
+        assert health["ready"] is True
+        assert health["usable_snapshot"] is True
+        assert health["reindex_in_progress"] is True
+        assert health["detail"] == "ready; index refresh is running"
+
+        status, payload = request(f"{base}/search?q=usable&mode=keyword")
+        assert status == 200
+        assert payload["results"][0]["file_path"] == "existing.md"
+
+        release_refresh.set()
+        deadline = time.monotonic() + 2
+        while server.state_payload()["reindex_in_progress"]:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        status, health = request(f"{base}/health")
+        assert status == 200
+        assert health["ready"] is True
+        assert health["degraded"] is True
+        assert health["detail"] == "ready; last refresh failed: refresh failed"
+    finally:
+        release_refresh.set()
+        server.shutdown()
+        server.server_close()
+        server.wait_for_workers()
+        server.close_index()
+
+
+def test_fresh_attached_index_returns_503_until_first_reindex_succeeds(tmp_path: Path):
+    reindex_started = threading.Event()
+    release_reindex = threading.Event()
+    server = SearchServer(("127.0.0.1", 0), None, workspace=tmp_path)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+
+    def factory(set_phase):
+        set_phase("loading_index")
+        index = SearchIndex(tmp_path, tmp_path / "index.sqlite3")
+        original_reindex = index.reindex
+
+        def blocking_first_reindex():
+            reindex_started.set()
+            release_reindex.wait(timeout=2)
+            original_reindex()
+
+        index.reindex = blocking_first_reindex
+        return index
+
+    server.start_initialization(factory)
+    assert reindex_started.wait(timeout=1)
+    try:
+        status, health = request(f"{base}/health")
+        assert status == 200
+        assert health["index_available"] is True
+        assert health["usable_snapshot"] is False
+        assert health["ready"] is False
+        assert health["reindex_in_progress"] is True
+
+        with pytest.raises(HTTPError) as unavailable:
+            urlopen(f"{base}/search?q=hello", timeout=2)
+        assert unavailable.value.code == 503
+        assert unavailable.value.headers["Retry-After"] == "2"
+        assert json.load(unavailable.value) == {
+            "error": "search index is unavailable",
+            "retryable": True,
+            "phase": "initial_reindex",
+            "detail": "initial index refresh in progress",
+        }
+
+        release_reindex.set()
+        deadline = time.monotonic() + 2
+        while not server.state_payload()["usable_snapshot"]:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        status, payload = request(f"{base}/search?q=hello&mode=keyword")
+        assert status == 200
+        assert payload["count"] == 0
+    finally:
+        release_reindex.set()
+        server.shutdown()
+        server.server_close()
+        server.wait_for_workers()
+        server.close_index()
+
+
+def test_shutdown_between_attach_and_lifecycle_prevents_reindex(tmp_path: Path):
+    server = SearchServer(("127.0.0.1", 0), None, workspace=tmp_path)
+    lifecycle_entered = threading.Event()
+    release_lifecycle = threading.Event()
+    reindex_called = threading.Event()
+    original_start_lifecycle = server.start_lifecycle
+
+    def delayed_start_lifecycle():
+        lifecycle_entered.set()
+        release_lifecycle.wait(timeout=2)
+        return original_start_lifecycle()
+
+    server.start_lifecycle = delayed_start_lifecycle
+
+    def factory(set_phase):
+        set_phase("loading_index")
+        index = SearchIndex(tmp_path, tmp_path / "index.sqlite3")
+
+        def record_reindex():
+            reindex_called.set()
+
+        index.reindex = record_reindex
+        return index
+
+    server.start_initialization(factory)
+    assert lifecycle_entered.wait(timeout=1)
+    assert server.available_index() is not None
+    server.server_close()
+    release_lifecycle.set()
+    server.wait_for_workers()
+    try:
+        assert reindex_called.is_set() is False
+        assert server.state_payload()["reindex_in_progress"] is False
+    finally:
+        server.close_index()
+
+
+def test_shutdown_waits_for_active_reindex_before_index_close(tmp_path: Path):
+    index = SearchIndex(tmp_path, tmp_path / "index.sqlite3")
+    reindex_started = threading.Event()
+    release_reindex = threading.Event()
+    workers_stopped = threading.Event()
+
+    def blocking_reindex():
+        reindex_started.set()
+        release_reindex.wait(timeout=2)
+
+    index.reindex = blocking_reindex
+    server = SearchServer(("127.0.0.1", 0), index)
+    assert server.start_lifecycle() is True
+    assert reindex_started.wait(timeout=1)
+    server.server_close()
+
+    def wait_for_workers():
+        server.wait_for_workers()
+        workers_stopped.set()
+
+    waiter = threading.Thread(target=wait_for_workers)
+    waiter.start()
+    assert workers_stopped.wait(timeout=0.05) is False
+    release_reindex.set()
+    assert workers_stopped.wait(timeout=2)
+    waiter.join(timeout=1)
+    server.close_index()
+    assert server.available_index() is None
 
 
 def test_facts_http_contract_and_search_integration(tmp_path: Path):

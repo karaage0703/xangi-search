@@ -26,6 +26,33 @@ capability. xangi starts the foreground `serve` process and manages:
 The extension does not use a fixed port, PID file, or URL in its manifest. It exits when the parent
 process closes stdin. Browsers and AI agents access it through xangi's same-origin proxy.
 
+The managed process binds its HTTP listener and emits the existing `ready` event before loading the
+embedding model and `SearchIndex` in the background. Here, `ready` means that the transport can
+answer status requests; it does not mean that the search index is ready. `GET /health` reads only
+in-memory lifecycle data and does not query SQLite.
+
+- `initialization_phase`: one of `starting`, `initializing`, `loading_embedder`, `loading_index`,
+  `ready`, `error`, or `stopping`
+- `initialization_error`: initialization failure detail, or `null` after success
+- `index_available`: whether an index is attached and can serve search requests
+- `usable_snapshot`: whether a usable existing snapshot or successfully refreshed index is available
+- `ready`: whether a usable snapshot is available to serve search requests
+
+While no usable snapshot is available, `/health`, `/ui`, `/settings` (GET), and `/file` remain
+available. Index-dependent search, FACT, settings mutation, and reindex endpoints return HTTP 503 with
+`Retry-After: 2`, allowing callers to retry without killing the process. If shutdown races with
+initialization, the completed index is closed instead of being attached.
+The 503 response `phase` distinguishes model/index loading from `initial_reindex` and
+`initial_reindex_failed` states.
+
+A usable existing snapshot continues serving searches during the startup refresh. If that refresh
+fails, health remains `ready: true` and reports `degraded: true` plus `last_reindex_error`. A fresh
+database remains `ready: false` until its first successful reindex.
+
+During shutdown, new reindex work is rejected and the initialization, reindex, and automatic update
+threads are joined before SQLite is closed. This prevents workers from using a closed connection
+when shutdown races with attachment or an active refresh.
+
 ## Search pipeline
 
 SQLite is the source of truth for the index. The default Hybrid mode combines embedding-based
@@ -36,8 +63,9 @@ A bounded grep fallback supplements searches with too few results. Directory wei
 score, and optional time decay are applied to the final ranking. The embedding matrix is cached in
 memory instead of being read from SQLite for every query.
 
-Incremental indexing runs at startup and at the configured interval. When an existing index is
-available, it can serve searches while the startup refresh continues in the background.
+Incremental indexing runs at startup and at the configured interval. Once the `SearchIndex` is
+attached, an existing index becomes searchable while the startup refresh continues in the
+background.
 
 ## FACTs
 

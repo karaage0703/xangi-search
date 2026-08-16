@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -48,6 +49,48 @@ def test_managed_entrypoint_uses_ephemeral_port_and_parent_lifecycle(tmp_path: P
         with urlopen(request, timeout=2) as response:
             health = json.load(response)
         assert health["service"] == "xangi-search"
+
+        assert process.stdin is not None
+        process.stdin.close()
+        assert process.wait(timeout=5) == 0
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+
+
+def test_managed_entrypoint_emits_ready_before_index_construction(tmp_path: Path):
+    token = "test-managed-extension-token"
+    env = {**os.environ, "XANGI_EXTENSION_AUTH_TOKEN": token}
+    script = """
+import sys
+import time
+from pathlib import Path
+from xangi_search import extension
+
+real_search_index = extension.SearchIndex
+
+def slow_search_index(*args, **kwargs):
+    time.sleep(2)
+    return real_search_index(*args, **kwargs)
+
+extension.SearchIndex = slow_search_index
+extension.serve_managed(Path(sys.argv[1]), True)
+"""
+    started = time.monotonic()
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(tmp_path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        assert process.stdout is not None
+        ready = json.loads(process.stdout.readline())
+        assert time.monotonic() - started < 1.5
+        assert ready["event"] == "ready"
 
         assert process.stdin is not None
         process.stdin.close()

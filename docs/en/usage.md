@@ -15,8 +15,11 @@ xangi extension start xangi-search
 xangi extension doctor xangi-search
 ```
 
-The first index is built in the background. After `doctor` succeeds, open `xangi-search` from
-the xangi Extensions screen. See the [setup guide](../../XANGI_SETUP.en.md) for the full flow.
+The process starts its HTTP listener first, then loads the embedding model and index in the
+background. A successful `xangi extension start` means that HTTP startup is complete. Confirm
+search readiness with `xangi extension doctor xangi-search` or `ready: true` from `GET /health`.
+Then open `xangi-search` from the xangi Extensions screen. See the
+[setup guide](../../XANGI_SETUP.en.md) for the full flow.
 
 ## Web UI
 
@@ -76,8 +79,15 @@ command. Search then runs in keyword mode.
 
 ### The first index does not finish
 
-Run `xangi extension doctor xangi-search` and inspect its progress or error. A successful `start`
-does not mean the initial index is complete.
+Run `xangi extension doctor xangi-search` and inspect `initialization_phase` and
+`initialization_error`. Initialization may take longer than 30 seconds on a slower CPU, a cold
+cache, or a large index without stopping the process. Search requests return HTTP 503 with
+`Retry-After: 2` while initialization is in progress. A successful `start` does not mean the
+initial index is complete.
+
+When an existing index is available, it remains `ready: true` and searchable during startup
+refresh. If refresh fails, the existing index remains available and health reports `degraded: true`
+with the failure in `last_reindex_error`.
 
 ### Semantic search is unavailable
 
