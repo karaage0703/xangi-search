@@ -9,6 +9,7 @@ It combines full-text and semantic search to quickly find past notes and records
 
 - Search related files in a workspace
 - Save and search durable facts as FACTs
+- Retrieve active or inactive FACTs by ID
 - Configure search and automatic indexing from the Web UI
 - Let xangi manage startup, shutdown, and updates
 

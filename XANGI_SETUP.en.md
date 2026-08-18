@@ -16,13 +16,48 @@ This repository is a local xangi extension. Run setup from the repository root.
 
 The search index, optional embeddings, and search/automatic-index settings are extension-owned state under the workspace's `.xangi-search/`. The parent xangi keeps the child port and bearer token only at runtime. Multiple instances with different workspaces are isolated; do not configure multiple instances to update the same workspace concurrently. Do not delete an existing index during setup. Incremental indexing runs at startup and every 30 minutes by default; do not add a duplicate xangi schedule or OS cron job. If a command fails, report the exact command and error before changing configuration.
 
-## Propose the usage skill
+## Offer pre-search before the LLM runs
 
-After verifying the extension, inspect the workspace conventions and propose installing the bundled `skills/xs-xangi-search/SKILL.md`.
+When xangi supports the `UserPromptSubmit` hook and `extension_request --query-json-stdin`, it can search once before sending the user input to the LLM and append an evidence pack capped at 12,000 characters. This uses xangi's generic command-hook mechanism; it does not add xangi-search-specific behavior to xangi core.
+
+1. Confirm that `xangi tool help extension_request` shows `--query-json-stdin`. If it does not, do not configure the hook and report the required xangi version.
+2. Confirm that `.venv/bin/xangi-search-preflight-hook` in this repository is executable.
+3. Read the workspace's `hooks/hooks.json`. Preserve existing `Stop` and other `UserPromptSubmit` hooks, then show the following proposed addition to the user. Replace `<absolute-repository-path>` with the absolute path of this checkout.
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "id": "xangi-search-preflight",
+        "exec": {
+          "file": "<absolute-repository-path>/.venv/bin/xangi-search-preflight-hook",
+          "args": []
+        },
+        "timeoutMs": 10000,
+        "maxOutputChars": 14000
+      }
+    ]
+  }
+}
+```
+
+The hook receives only the current unexpanded user input as JSON on stdin and calls `/search` through the parent xangi's `extension_request`. It does not send conversation history, the system prompt, environment variables, or authentication tokens to xangi-search. Search failures, timeouts, and zero results add no context and allow the normal response to continue.
+
+Before changing configuration, disclose that the command runs persistently on every turn, the exact executable, the data passed to it, the 10-second timeout, and the 14,000-character output limit. Offer these choices:
+
+- Recommended: add the pre-search hook
+- Use only the extension and skill; do not add the hook
+
+Do not modify `hooks/hooks.json` until the user selects an option. If the same `id` already exists, do not add a duplicate. Show the diff and ask again if its executable or limits differ. When stopping or removing the extension, ask whether to disable or remove this hook too.
+
+## Propose adding or updating the usage skill
+
+After initial setup or an extension update, inspect the workspace conventions and propose adding or updating the bundled `skills/xs-xangi-search/SKILL.md` only when needed.
 
 1. Check whether the workspace uses `skills/`, `.agents/skills/`, or `.claude/skills/`, and follow the existing convention. If none exists, propose `skills/xs-xangi-search/`.
-2. If a skill with the same name exists, show the difference instead of overwriting it.
-3. If the workspace has an `AGENTS.md`, read it and propose only the non-duplicated parts of this minimal policy:
+2. If a skill with the same name exists, compare it with the bundled version. Propose an update only for material differences in APIs, operating procedures, or failure handling, and state the reason, target path, and change summary. Do not propose formatting-only changes or replace workspace guidance that is already equivalent or more complete.
+3. If the workspace has an `AGENTS.md`, propose a minimal change only when an always-on rule is missing or stale. Preserve existing instructions and user-specific rules, and do not add duplicate guidance:
 
 ```markdown
 ## xangi-search
@@ -33,13 +68,13 @@ After verifying the extension, inspect the workspace conventions and propose ins
 - For durable facts worth remembering, search similar facts before deciding to ADD, UPDATE, or DELETE.
 ```
 
-Offer these choices:
+When an addition or update is warranted, offer these choices:
 
-- Recommended: install the skill and add the minimal `AGENTS.md` policy
-- Install only the skill
+- Recommended: add or update the skill and apply the minimum necessary `AGENTS.md` change
+- Add or update only the skill
 - Keep the workspace unchanged and use only the extension
 
-Do not modify workspace skills or `AGENTS.md` until the user selects an option. After changes, report the affected paths and the applied diff. Use the language of the current conversation for user-facing explanations.
+Approval of extension setup or update does not authorize workspace edits. Do not modify workspace skills or `AGENTS.md` until the user selects an option. After changes, report the affected paths, applied diff, and verification result. If no update is needed, state that no workspace change is recommended. Use the language of the current conversation for user-facing explanations.
 
 ## Verify fact usage
 
@@ -47,8 +82,8 @@ When the skill is installed, do not connect to a fixed child port. Verify the fo
 
 1. Search existing facts with `GET /facts/similar?q=...&k=3`.
 2. Add a temporary fact with `POST /facts` and record the returned ID.
-3. Update the same ID with `PUT /facts/{id}` and confirm the change with `GET /facts`.
-4. Deactivate the same ID with `DELETE /facts/{id}` and confirm `is_active: 0` in `GET /facts`.
+3. Update the same ID with `PUT /facts/{id}` and confirm the change with `GET /facts/{id}`.
+4. Deactivate the same ID with `DELETE /facts/{id}` and confirm `is_active: 0` with `GET /facts/{id}`.
 5. Restart the extension and confirm that normal facts persist. Deactivate the temporary fact after verification.
 
 Facts are not substitutes for long logs or documents. Keep each entry to one durable fact, never store secrets, and include `source_file` and `fact_date` when available. Search for a similar fact before adding; update the existing ID when the same fact changes instead of creating a duplicate. Do not retrieve or record the child port or authentication token.

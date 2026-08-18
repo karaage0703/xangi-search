@@ -98,13 +98,18 @@ xangi tool extension_request \
   --path /facts/123 --method PUT \
   --body-json '{"text":"更新後の1件1事実"}'
 
+# GET（無効化済みfactもis_active: 0で取得）
+xangi tool extension_request \
+  --id xangi-search --capability workspace.search \
+  --path /facts/123
+
 # DELETE
 xangi tool extension_request \
   --id xangi-search --capability workspace.search \
   --path /facts/123 --method DELETE
 ```
 
-ADD/UPDATEではresponseの`result`または`results`にあるIDとtextを確認する。DELETEは`result.is_active`が`0`であることを確認し、最後に`GET /facts`で反映を確認する。失敗した場合は別IDへ重複登録せず、method・path・responseを報告する。
+ADD/UPDATEではresponseの`result`または`results`にあるIDとtextを確認する。UPDATE/DELETE後は`GET /facts/{id}`で再取得し、DELETEでは`result.is_active`が`0`であることを確認する。存在しないIDは404を返す。失敗した場合は別IDへ重複登録せず、method・path・responseを報告する。
 
 ## 結果の提示
 

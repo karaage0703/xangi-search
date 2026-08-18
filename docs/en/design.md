@@ -56,8 +56,14 @@ when shutdown races with attachment or an active refresh.
 ## Search pipeline
 
 SQLite is the source of truth for the index. The default Hybrid mode combines embedding-based
-semantic search with SQLite FTS5 keyword search. When vector dependencies are unavailable, the
-service falls back to Keyword mode.
+semantic search with SQLite FTS5 keyword search. The Hybrid base score uses the keyword score as a
+floor so that an exact match omitted from the vector candidates cannot rank below a semantic-only
+candidate. When vector dependencies are unavailable, the service falls back to Keyword mode.
+
+If the final fixed-width chunk is no longer than the overlap, its content is already present in the
+previous chunk and no redundant chunk is created. Directory exclusions for dependencies, build
+artifacts, and runtime state are declared once as glob patterns and shared by incremental indexing
+and grep fallbacks. Root-only patterns remain separate instead of being hard-coded per search path.
 
 A bounded grep fallback supplements searches with too few results. Directory weights, a minimum
 score, and optional time decay are applied to the final ranking. The embedding matrix is cached in
@@ -90,18 +96,20 @@ use the xangi proxy or extension API instead of handling the child process port 
 | --- | --- | --- |
 | `GET` | `/health` | Version, capabilities, and index state |
 | `GET` | `/ui` | Web UI for search, FACTs, and settings |
-| `GET` | `/search` | File search with `q`, `mode`, `k`, `s`, `forgetting`, and `r2ag` |
+| `GET` | `/search` | File search with `q`, `mode`, `k`, `s`, `forgetting`, `r2ag`, `context_chunks`, and `context_results` |
 | `GET` | `/file` | Read a small text file inside the workspace |
 | `POST` | `/agent` | xangi agent backend contract |
 | `GET` / `PUT` | `/settings` | Read or update settings |
 | `POST` | `/reindex` | Start incremental indexing asynchronously |
 | `GET` / `POST` | `/facts` | List or add FACTs |
 | `GET` | `/facts/similar` | Find similar FACTs |
-| `PUT` / `DELETE` | `/facts/{id}` | Update or deactivate a FACT |
+| `GET` / `PUT` / `DELETE` | `/facts/{id}` | Retrieve, update, or deactivate a FACT. Retrieval also returns inactive FACTs |
 
 Regular service responses use `schema_version: 1`, while `/agent` uses the xangi contract field
 `schemaVersion: 1`. `POST /reindex` returns HTTP 202 when accepted; clients use `GET /health` to
 observe completion.
+
+`context_chunks` is an integer from 0 to 2. The default, 0, preserves the existing response with only the top-ranked chunk from each file. Positive values keep the ranking unchanged and add neighboring chunks from the same file, in order, under `context.chunks` for the top `context_results` results (default and maximum 3). This optional mode lets agents combine discovery and evidence reading in one round trip without increasing normal search responses.
 
 ## Updates
 

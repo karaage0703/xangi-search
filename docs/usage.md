@@ -36,6 +36,7 @@ processは先に起動し、埋め込みmodelとindexをバックグラウンド
 
 `FACT`タブでは、長く覚えておきたい事実を追加・編集・無効化できます。FACTは通常の
 ファイル検索にも利用されます。長いログや文書全体ではなく、1件につき1つの事実へ絞ります。
+APIでは`GET /facts/{id}`で1件だけ取得でき、無効化済みFACTも`is_active: 0`として確認できます。
 
 ### 設定
 
@@ -54,7 +55,8 @@ processは先に起動し、埋め込みmodelとindexをバックグラウンド
 
 同梱の[`xs-xangi-search`スキル](../skills/xs-xangi-search/SKILL.md)をワークスペースへ追加すると、
 AIエージェントが検索とFACT管理を使うための手順を共有できます。追加先や`AGENTS.md`の変更は、
-ユーザーが選択するまで行いません。
+初回setup時とextension更新後に同梱版とworkspace側を比較し、実質的な差分がある場合だけ提案します。
+ユーザーが選択するまでworkspaceは変更しません。
 
 ## 単独CLIとして使う
 

@@ -56,7 +56,14 @@ workerが触れません。
 ## 検索処理
 
 indexの正本はSQLiteです。標準のHybrid検索は、埋め込みによる意味検索とSQLite FTS5の
-キーワード検索を統合します。vector依存がない場合はKeyword検索へ縮退します。
+キーワード検索を統合します。Hybridのbase scoreはkeyword scoreを下限として、vector候補から
+漏れた完全一致が意味検索だけの候補より下がらないようにします。vector依存がない場合は
+Keyword検索へ縮退します。
+
+固定幅chunkの末尾がoverlap以下なら、その内容は直前chunkにすでに含まれるため独立chunkを
+作りません。依存物、build生成物、runtime stateなどのdirectory除外規則はglob patternとして
+一か所で宣言し、差分indexとgrep fallbackで共有します。root直下だけを除外するpatternは分けて
+扱い、検索経路ごとの条件直書きを避けます。
 
 検索結果が不足する場合は、範囲を制限したgrep fallbackを追加します。ディレクトリ重み、
 最低関連度、任意の時間減衰を最終scoreへ反映します。埋め込み行列はmemoryへcacheし、queryごとに
@@ -88,18 +95,20 @@ xangiのproxyまたはextension APIを経由し、子processのportやtokenを�
 | --- | --- | --- |
 | `GET` | `/health` | version、capability、index状態 |
 | `GET` | `/ui` | 検索、FACT、設定のWeb UI |
-| `GET` | `/search` | ファイル検索。`q`、`mode`、`k`、`s`、`forgetting`、`r2ag`に対応 |
+| `GET` | `/search` | ファイル検索。`q`、`mode`、`k`、`s`、`forgetting`、`r2ag`、`context_chunks`、`context_results`に対応 |
 | `GET` | `/file` | ワークスペース内の小さなtext fileを取得 |
 | `POST` | `/agent` | xangiのagent backend契約 |
 | `GET` / `PUT` | `/settings` | 設定の取得・更新 |
 | `POST` | `/reindex` | 差分indexを非同期で開始 |
 | `GET` / `POST` | `/facts` | FACTの一覧・追加 |
 | `GET` | `/facts/similar` | 類似FACTの検索 |
-| `PUT` / `DELETE` | `/facts/{id}` | FACTの更新・無効化 |
+| `GET` / `PUT` / `DELETE` | `/facts/{id}` | FACTの個別取得・更新・無効化。個別取得は無効化済みFACTも返す |
 
 通常のservice responseは`schema_version: 1`を使用し、`/agent`はxangi契約の
 `schemaVersion: 1`を使用します。`POST /reindex`は受付時にHTTP 202を返し、完了は
 `GET /health`で確認します。
+
+`context_chunks`は0〜2の整数です。0（既定）は従来どおり各ファイルの最上位チャンクだけを返します。1以上では検索順位を変えず、上位`context_results`件（既定・最大3）の各resultへ、同じファイルの前後チャンクを`context.chunks`として順番に追加します。検索と根拠確認を一往復へ束ねたいagent向けの任意指定で、通常の検索応答は増やしません。
 
 ## 更新
 

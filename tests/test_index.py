@@ -3,8 +3,9 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pytest
 
-from xangi_search.index import SearchIndex, chunk_text
+from xangi_search.index import SearchIndex, chunk_text, is_excluded_directory
 
 
 class FakeEmbedder:
@@ -25,7 +26,25 @@ class FakeEmbedder:
 
 
 def test_chunk_text_uses_overlap():
-    assert chunk_text("abcdefghij", size=6, overlap=2) == ["abcdef", "efghij", "ij"]
+    assert chunk_text("abcdefghij", size=6, overlap=2) == ["abcdef", "efghij"]
+
+
+def test_chunk_text_skips_redundant_short_tail():
+    text = "a" * 896 + "tail"
+
+    chunks = chunk_text(text)
+
+    assert [len(chunk) for chunk in chunks] == [512, 452]
+    assert chunks[-1].endswith("tail")
+
+
+def test_directory_exclusions_are_pattern_driven():
+    assert is_excluded_directory(".venv")
+    assert is_excluded_directory(".venv_arxiv")
+    assert is_excluded_directory("node_modules")
+    assert is_excluded_directory("tmp", at_workspace_root=True)
+    assert not is_excluded_directory("tmp")
+    assert not is_excluded_directory("logs")
 
 
 def test_reindex_and_hybrid_search(tmp_path: Path):
@@ -141,6 +160,41 @@ def test_hybrid_search_falls_back_to_keyword_scores_without_vectors(tmp_path: Pa
     index.close()
 
 
+def test_hybrid_search_preserves_exact_keyword_match_outside_vector_candidates(
+    tmp_path: Path, monkeypatch
+):
+    index = SearchIndex(tmp_path, tmp_path / "index.sqlite3")
+    index.connection.executemany(
+        "INSERT INTO chunks(id, file_path, chunk_index, content) VALUES (?, ?, 0, ?)",
+        [(1, "exact.md", "denkitribe exact match")]
+        + [
+            (chunk_id, f"noise-{chunk_id}.md", "tiny noise")
+            for chunk_id in range(2, 42)
+        ],
+    )
+    index.connection.commit()
+    monkeypatch.setattr(
+        index,
+        "_keyword_scores",
+        lambda *_args, **_kwargs: {1: 1.0},
+    )
+    monkeypatch.setattr(
+        index,
+        "_vector_scores",
+        lambda *_args, **_kwargs: (
+            {1: 0.84} | {chunk_id: 0.88 for chunk_id in range(2, 42)}
+        ),
+    )
+
+    results = index.search("denkitribe", mode="hybrid", limit=8)
+
+    assert results[0].file_path == "exact.md"
+    assert results[0].score == 1.0
+    assert results[0].keyword_score == 1.0
+    assert results[0].vector_score == 0.0
+    index.close()
+
+
 def test_query_embeddings_are_cached_and_shared_by_concurrent_calls(tmp_path: Path):
     started = threading.Event()
     release = threading.Event()
@@ -187,11 +241,17 @@ def test_reindex_prunes_excluded_directories(tmp_path: Path):
     excluded = tmp_path / "tmp"
     excluded.mkdir()
     (excluded / "ignored.md").write_text("ignored content", encoding="utf-8")
+    virtual_environment = tmp_path / ".venv_arxiv"
+    virtual_environment.mkdir()
+    (virtual_environment / "package.py").write_text(
+        "third party package marker", encoding="utf-8"
+    )
     index = SearchIndex(tmp_path, tmp_path / "index.sqlite3")
     index.reindex()
     assert [
         result.file_path for result in index.search("ignored", mode="keyword")
     ] == []
+    assert index.search("third party package marker", mode="keyword") == []
     assert index.search("kept", mode="keyword")[0].file_path == "kept.md"
     index.close()
 
@@ -258,6 +318,62 @@ def test_search_payload_includes_ranking_explanation_and_phase_timings(tmp_path:
     }
     assert payload["results"][0]["base_score"] > 0
     assert payload["results"][0]["fts_score"] == payload["results"][0]["keyword_score"]
+    index.close()
+
+
+def test_search_payload_can_add_bounded_context_without_changing_rank(
+    tmp_path: Path, monkeypatch
+):
+    index = SearchIndex(tmp_path, tmp_path / "index.sqlite3")
+    index.connection.executemany(
+        "INSERT INTO chunks(file_path, chunk_index, content) VALUES (?, ?, ?)",
+        [
+            ("notes.md", 0, "before context"),
+            ("notes.md", 1, "target matching chunk"),
+            ("notes.md", 2, "after context"),
+            ("other.md", 0, "target secondary file"),
+        ],
+    )
+    index.connection.commit()
+
+    baseline = index.search_payload("target", mode="keyword", limit=2)
+    bundled = index.search_payload(
+        "target", mode="keyword", limit=2, context_chunks=1, context_results=1
+    )
+
+    assert "context_chunks" not in baseline
+    without_context = [
+        {key: value for key, value in item.items() if key != "context"}
+        for item in bundled["results"]
+    ]
+    assert without_context == baseline["results"]
+    assert bundled["context_chunks"] == 1
+    assert bundled["context_results"] == 1
+    assert [
+        chunk["chunk_index"] for chunk in bundled["results"][0]["context"]["chunks"]
+    ] == [0, 1, 2]
+    assert "context" not in bundled["results"][1]
+    with pytest.raises(ValueError, match="context_chunks"):
+        index.search_payload("target", mode="keyword", context_chunks=3)
+    with pytest.raises(ValueError, match="context_results"):
+        index.search_payload(
+            "target", mode="keyword", context_chunks=1, context_results=5
+        )
+    monkeypatch.setattr(
+        index,
+        "context_windows",
+        lambda *_args: {
+            "notes.md": {
+                "start_chunk_index": 1,
+                "end_chunk_index": 1,
+                "chunks": [{"chunk_index": 1, "content": "changed concurrently"}],
+            }
+        },
+    )
+    inconsistent = index.search_payload(
+        "target", mode="keyword", context_chunks=1, context_results=1
+    )
+    assert "context" not in inconsistent["results"][0]
     index.close()
 
 

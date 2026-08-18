@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 import numpy as np
@@ -84,13 +85,13 @@ DEFAULT_INCLUDE_NAMES = {
     "makefile",
     "readme",
 }
-DEFAULT_EXCLUDE_PARTS = {
+DEFAULT_EXCLUDE_DIRECTORY_PATTERNS = (
     ".git",
     ".next",
     ".obsidian",
     ".openclaw",
     ".pio",
-    ".venv",
+    ".venv*",
     ".workspace_rag",
     ".xangi",
     ".xangi-search",
@@ -99,8 +100,8 @@ DEFAULT_EXCLUDE_PARTS = {
     "dist",
     "node_modules",
     "venv",
-}
-DEFAULT_EXCLUDE_ROOTS = {"tmp", "tools"}
+)
+DEFAULT_EXCLUDE_ROOT_DIRECTORY_PATTERNS = ("tmp", "tools")
 DEFAULT_EXCLUDE_NAMES = {
     ".ds_store",
     "package-lock.json",
@@ -142,10 +143,24 @@ def chunk_text(text: str, size: int = 512, overlap: int = 64) -> list[str]:
     start = 0
     while start < len(text):
         value = text[start : start + size]
+        if start > 0 and len(value) <= overlap:
+            break
         if value.strip():
             chunks.append(value)
         start += size - overlap
     return chunks
+
+
+def is_excluded_directory(
+    name: str,
+    *,
+    at_workspace_root: bool = False,
+    extra_patterns: Iterable[str] = (),
+) -> bool:
+    patterns = (*DEFAULT_EXCLUDE_DIRECTORY_PATTERNS, *extra_patterns)
+    if at_workspace_root:
+        patterns = (*patterns, *DEFAULT_EXCLUDE_ROOT_DIRECTORY_PATTERNS)
+    return any(fnmatchcase(name, pattern) for pattern in patterns)
 
 
 def default_db_path(workspace: Path) -> Path:
@@ -307,8 +322,7 @@ class SearchIndex:
             directories[:] = [
                 name
                 for name in directories
-                if name not in DEFAULT_EXCLUDE_PARTS
-                and not (at_workspace_root and name in DEFAULT_EXCLUDE_ROOTS)
+                if not is_excluded_directory(name, at_workspace_root=at_workspace_root)
                 and not (Path(root) / name).is_symlink()
             ]
             for name in files:
@@ -316,12 +330,13 @@ class SearchIndex:
                 if path.is_symlink() or not path.is_file():
                     continue
                 relative = path.relative_to(self.workspace)
-                if any(part in DEFAULT_EXCLUDE_PARTS for part in relative.parts):
+                if any(
+                    is_excluded_directory(part, at_workspace_root=index == 0)
+                    for index, part in enumerate(relative.parts[:-1])
+                ):
                     continue
                 relative_posix = relative.as_posix()
                 lower_name = path.name.lower()
-                if relative.parts and relative.parts[0] in DEFAULT_EXCLUDE_ROOTS:
-                    continue
                 if relative_posix in {
                     DEFAULT_FACTS_SNAPSHOT_PATH,
                     self._facts_snapshot_path,
@@ -800,8 +815,10 @@ class SearchIndex:
                 elif not keyword:
                     score = vector.get(chunk_id, 0.0)
                 else:
-                    score = 0.7 * vector.get(chunk_id, 0.0) + 0.3 * keyword.get(
-                        chunk_id, 0.0
+                    keyword_score = keyword.get(chunk_id, 0.0)
+                    score = max(
+                        keyword_score,
+                        0.7 * vector.get(chunk_id, 0.0) + 0.3 * keyword_score,
                     )
                 base_score = score
                 row = rows_by_id.get(chunk_id)
@@ -892,26 +909,98 @@ class SearchIndex:
                 )
             return results
 
-    def search_payload(self, query: str, **kwargs: object) -> dict[str, object]:
+    def search_payload(
+        self,
+        query: str,
+        *,
+        context_chunks: int = 0,
+        context_results: int = 3,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        if context_chunks < 0 or context_chunks > 2:
+            raise ValueError("context_chunks must be between 0 and 2")
+        if context_results < 1 or context_results > 4:
+            raise ValueError("context_results must be between 1 and 4")
         started = time.perf_counter()
         timings: dict[str, float] = {}
         results = self.search(query, timings=timings, **kwargs)
+        serialized_results = [
+            {key: value for key, value in asdict(result).items() if value is not None}
+            for result in results
+        ]
+        if context_chunks:
+            windows = self.context_windows(results[:context_results], context_chunks)
+            for result in serialized_results:
+                context = windows.get(str(result["file_path"]))
+                chunks = context.get("chunks", []) if context is not None else []
+                hit = next(
+                    (
+                        chunk
+                        for chunk in chunks
+                        if chunk.get("chunk_index") == result["chunk_index"]
+                    ),
+                    None,
+                )
+                if hit is not None and hit.get("content") == result["content"]:
+                    result["context"] = context
         elapsed_ms = (time.perf_counter() - started) * 1000
-        return {
+        payload = {
             "schema_version": 1,
             "query": query,
             "mode": kwargs.get("mode", "hybrid"),
             "elapsed_ms": round(elapsed_ms, 1),
             "timings_ms": {key: round(value, 1) for key, value in timings.items()},
             "count": len(results),
-            "results": [
+            "results": serialized_results,
+        }
+        if context_chunks:
+            payload["context_chunks"] = context_chunks
+            payload["context_results"] = min(context_results, len(results))
+        return payload
+
+    def context_windows(
+        self, results: Sequence[SearchResult], radius: int
+    ) -> dict[str, dict[str, object]]:
+        if radius < 0:
+            raise ValueError("radius must not be negative")
+        if not results:
+            return {}
+        clauses: list[str] = []
+        parameters: list[object] = []
+        for result in results:
+            clauses.append("(file_path = ? AND chunk_index BETWEEN ? AND ?)")
+            parameters.extend(
+                [
+                    result.file_path,
+                    max(0, result.chunk_index - radius),
+                    result.chunk_index + radius,
+                ]
+            )
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                "SELECT file_path, chunk_index, content FROM chunks WHERE "
+                + " OR ".join(clauses)
+                + " ORDER BY file_path, chunk_index",
+                parameters,
+            ).fetchall()
+        grouped: dict[str, list[dict[str, object]]] = {
+            result.file_path: [] for result in results
+        }
+        for row in rows:
+            grouped[str(row["file_path"])].append(
                 {
-                    key: value
-                    for key, value in asdict(result).items()
-                    if value is not None
+                    "chunk_index": int(row["chunk_index"]),
+                    "content": row["content"],
                 }
-                for result in results
-            ],
+            )
+        return {
+            file_path: {
+                "start_chunk_index": chunks[0]["chunk_index"],
+                "end_chunk_index": chunks[-1]["chunk_index"],
+                "chunks": chunks,
+            }
+            for file_path, chunks in grouped.items()
+            if chunks
         }
 
     def list_facts(self) -> list[dict[str, object]]:
@@ -921,6 +1010,15 @@ class SearchIndex:
                 "FROM facts ORDER BY updated_at DESC"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_fact(self, fact_id: int) -> dict[str, object] | None:
+        with self._read_connection() as connection:
+            row = connection.execute(
+                "SELECT id, text, source_file, created_at, updated_at, access_count, is_active, fact_date "
+                "FROM facts WHERE id = ?",
+                (fact_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
 
     def add_facts(self, facts: list[dict[str, object]]) -> list[dict[str, object]]:
         with self._write_lock:
