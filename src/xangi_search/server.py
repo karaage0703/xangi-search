@@ -15,12 +15,19 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 from . import __version__
-from .index import DEFAULT_EXCLUDE_PARTS, DEFAULT_EXCLUDE_ROOTS, SearchIndex
+from .index import (
+    DEFAULT_EXCLUDE_DIRECTORY_PATTERNS,
+    DEFAULT_EXCLUDE_ROOT_DIRECTORY_PATTERNS,
+    SearchIndex,
+    is_excluded_directory,
+)
 from .settings import (
     SettingsStore,
     default_settings_path,
     validate_facts_snapshot_path,
 )
+
+GREP_EXTRA_EXCLUDE_DIRECTORY_PATTERNS = ("logs",)
 
 
 class SearchServer(ThreadingHTTPServer):
@@ -185,6 +192,8 @@ class SearchServer(ThreadingHTTPServer):
         limit: int | None = None,
         min_score: float | None = None,
         forgetting: bool | None = None,
+        context_chunks: int = 0,
+        context_results: int = 3,
     ) -> dict[str, object]:
         defaults = self.settings.get()
         started = time.perf_counter()
@@ -194,6 +203,10 @@ class SearchServer(ThreadingHTTPServer):
             0.0, min(1.0, defaults.min_score if min_score is None else min_score)
         )
         selected_forgetting = defaults.forgetting if forgetting is None else forgetting
+        if context_chunks < 0 or context_chunks > 2:
+            raise ValueError("context_chunks must be between 0 and 2")
+        if context_results < 1 or context_results > 4:
+            raise ValueError("context_results must be between 1 and 4")
         index = self.require_index()
         with index.query_vector_context(query, enabled=selected_mode != "keyword") as (
             query_vector,
@@ -209,6 +222,8 @@ class SearchServer(ThreadingHTTPServer):
                 query_vector=query_vector,
                 allow_query_encoding=degraded_reason is None,
                 forgetting=selected_forgetting,
+                context_chunks=context_chunks,
+                context_results=context_results,
             )
             rag_finished = time.perf_counter()
             fact_results = index.search_facts(query_vector, limit=3)
@@ -554,6 +569,17 @@ class SearchHandler(BaseHTTPRequestHandler):
             facts = index.list_facts()
             self._json(200, {"count": len(facts), "facts": facts})
             return
+        fact_match = re.fullmatch(r"/facts/(\d+)", parsed.path)
+        if fact_match:
+            index = self._require_index()
+            if index is None:
+                return
+            fact = index.get_fact(int(fact_match.group(1)))
+            if fact is None:
+                self._json(404, {"error": "fact not found"})
+                return
+            self._json(200, {"status": "ok", "result": fact})
+            return
         if parsed.path == "/facts/similar":
             index = self._require_index()
             if index is None:
@@ -597,6 +623,8 @@ class SearchHandler(BaseHTTPRequestHandler):
                         ].lower()
                         in {"1", "true", "yes", "on"}
                     ),
+                    context_chunks=int((params.get("context_chunks") or ["0"])[0]),
+                    context_results=int((params.get("context_results") or ["3"])[0]),
                 )
             except (ValueError, TypeError) as error:
                 self._json(400, {"error": str(error)})
@@ -752,7 +780,6 @@ class SearchHandler(BaseHTTPRequestHandler):
 
 
 def discover_workspace_directories(workspace: Path) -> list[str]:
-    excluded = DEFAULT_EXCLUDE_PARTS | DEFAULT_EXCLUDE_ROOTS
     try:
         children = workspace.iterdir()
     except OSError:
@@ -763,7 +790,7 @@ def discover_workspace_directories(workspace: Path) -> list[str]:
         if child.is_dir()
         and not child.is_symlink()
         and not child.name.startswith(".")
-        and child.name.lower() not in excluded
+        and not is_excluded_directory(child.name.lower(), at_workspace_root=True)
     )
 
 
@@ -890,35 +917,11 @@ def grep_search(
         "--max-count",
         "1",
         "--glob",
-        "!.git",
-        "--glob",
-        "!node_modules",
-        "--glob",
-        "!__pycache__",
-        "--glob",
-        "!.venv",
-        "--glob",
         "!*.js",
         "--glob",
         "!*.min.js",
         "--glob",
         "!*.bundle.js",
-        "--glob",
-        "!.workspace_rag",
-        "--glob",
-        "!.xangi",
-        "--glob",
-        "!.xangi-search",
-        "--glob",
-        "!.obsidian",
-        "--glob",
-        "!dist",
-        "--glob",
-        "!build",
-        "--glob",
-        "!tmp",
-        "--glob",
-        "!logs",
         "--glob",
         "!*.pyc",
         "--glob",
@@ -939,10 +942,16 @@ def grep_search(
         "!*.zip",
         "--glob",
         "!*.lock",
-        "--",
-        query,
-        str(workspace),
     ]
+    for pattern in (
+        *DEFAULT_EXCLUDE_DIRECTORY_PATTERNS,
+        *GREP_EXTRA_EXCLUDE_DIRECTORY_PATTERNS,
+    ):
+        command.extend(("--glob", f"!{pattern}/**"))
+        command.extend(("--glob", f"!**/{pattern}/**"))
+    for pattern in DEFAULT_EXCLUDE_ROOT_DIRECTORY_PATTERNS:
+        command.extend(("--glob", f"!{pattern}/**"))
+    command.extend(("--", query, str(workspace)))
     try:
         completed = subprocess.run(
             command, capture_output=True, text=True, timeout=5, check=False
@@ -997,20 +1006,6 @@ def python_grep_search(
     needle = query.casefold()
     if not needle:
         return []
-    excluded_directories = {
-        ".git",
-        ".obsidian",
-        ".venv",
-        ".workspace_rag",
-        ".xangi",
-        ".xangi-search",
-        "__pycache__",
-        "build",
-        "dist",
-        "logs",
-        "node_modules",
-        "tmp",
-    }
     excluded_suffixes = {
         ".gif",
         ".jpeg",
@@ -1025,10 +1020,16 @@ def python_grep_search(
     }
     results: list[dict[str, str]] = []
     for root, directories, filenames in os.walk(workspace, followlinks=False):
+        at_workspace_root = Path(root) == workspace
         directories[:] = [
             name
             for name in directories
-            if name not in excluded_directories and not (Path(root) / name).is_symlink()
+            if not is_excluded_directory(
+                name,
+                at_workspace_root=at_workspace_root,
+                extra_patterns=GREP_EXTRA_EXCLUDE_DIRECTORY_PATTERNS,
+            )
+            and not (Path(root) / name).is_symlink()
         ]
         for name in filenames:
             path = Path(root) / name

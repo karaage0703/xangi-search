@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from xangi_search.index import SearchIndex
-from xangi_search.server import SearchServer
+from xangi_search.server import SearchServer, grep_search
 
 
 class FakeEmbedder:
@@ -100,6 +100,33 @@ def test_http_contract(tmp_path: Path):
         assert set(payload["timings_ms"]) == {"rag", "facts", "grep", "total"}
         assert "rag_timings_ms" in payload
 
+        status, bundled = request(
+            f"{base}/search?q=hello&mode=keyword&k=5&context_chunks=1&context_results=1"
+        )
+        assert status == 200
+        assert bundled["context_chunks"] == 1
+        assert bundled["context_results"] == 1
+        assert bundled["results"][0]["context"]["chunks"][0]["content"] == (
+            "hello workspace search"
+        )
+
+        status, four_context_results = request(
+            f"{base}/search?q=hello&mode=keyword&k=5&context_chunks=1&context_results=4"
+        )
+        assert status == 200
+        assert four_context_results["context_results"] == 1
+
+        status, invalid_context = request(f"{base}/search?q=hello&context_chunks=4")
+        assert status == 400
+        assert invalid_context["error"] == "context_chunks must be between 0 and 2"
+        status, invalid_result_count = request(
+            f"{base}/search?q=hello&context_chunks=1&context_results=5"
+        )
+        assert status == 400
+        assert invalid_result_count["error"] == (
+            "context_results must be between 1 and 4"
+        )
+
         status, r2ag = request(f"{base}/search?q=hello&mode=keyword&k=5&r2ag=on")
         assert status == 200
         assert "**文書1** [hello.md]" in r2ag["r2ag"]
@@ -139,6 +166,11 @@ def test_search_uses_portable_fallback_for_files_outside_the_index(
     (tmp_path / "unindexed.custom").write_text(
         "needle only in fallback", encoding="utf-8"
     )
+    virtual_environment = tmp_path / ".venv_arxiv"
+    virtual_environment.mkdir()
+    (virtual_environment / "ignored.custom").write_text(
+        "needle from dependency", encoding="utf-8"
+    )
     index = SearchIndex(tmp_path, tmp_path / "index.sqlite3")
     index.reindex()
     server = SearchServer(("127.0.0.1", 0), index)
@@ -161,6 +193,21 @@ def test_search_uses_portable_fallback_for_files_outside_the_index(
         server.shutdown()
         server.server_close()
         index.close()
+
+
+def test_ripgrep_fallback_uses_shared_directory_patterns(tmp_path: Path, monkeypatch):
+    commands = []
+
+    def capture_command(command, **_kwargs):
+        commands.append(command)
+        return type("Completed", (), {"stdout": ""})()
+
+    monkeypatch.setattr("xangi_search.server.subprocess.run", capture_command)
+
+    assert grep_search("needle", tmp_path) == []
+    assert "!**/.venv*/**" in commands[0]
+    assert "!node_modules/**" in commands[0]
+    assert "!tmp/**" in commands[0]
 
 
 def test_settings_are_persisted_and_become_search_defaults(tmp_path: Path):
@@ -597,6 +644,17 @@ def test_facts_http_contract_and_search_integration(tmp_path: Path):
         snapshot = tmp_path / "exports" / "facts.md"
         assert "猫の名前はウミ" in snapshot.read_text(encoding="utf-8")
 
+        status, fetched = request(f"{base}/facts/{fact_id}")
+        assert status == 200
+        assert fetched["status"] == "ok"
+        assert fetched["result"]["id"] == fact_id
+        assert fetched["result"]["text"] == "猫の名前はウミ"
+        assert fetched["result"]["is_active"] == 1
+
+        status, missing = request(f"{base}/facts/{fact_id + 999}")
+        assert status == 404
+        assert missing == {"error": "fact not found"}
+
         status, payload = request(f"{base}/search?q={quote('猫')}&mode=hybrid")
         assert status == 200
         assert payload["facts_count"] == 1
@@ -612,10 +670,18 @@ def test_facts_http_contract_and_search_integration(tmp_path: Path):
         assert status == 200
         assert updated["result"]["text"] == "猫の名前はソラ"
 
+        status, fetched = request(f"{base}/facts/{fact_id}")
+        assert status == 200
+        assert fetched["result"]["text"] == "猫の名前はソラ"
+
         status, deleted = request(f"{base}/facts/{fact_id}", "DELETE")
         assert status == 200
         assert deleted["result"]["is_active"] == 0
         assert "猫の名前はソラ" not in snapshot.read_text(encoding="utf-8")
+
+        status, fetched = request(f"{base}/facts/{fact_id}")
+        assert status == 200
+        assert fetched["result"]["is_active"] == 0
     finally:
         server.shutdown()
         server.server_close()

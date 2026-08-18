@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xangi-search"
-version = "0.1.2"
+version = "0.2.0"
 description = "Local workspace search service for xangi"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,6 +19,7 @@ vector = ["sentence-transformers>=3.0.0"]
 [project.scripts]
 xangi-search = "xangi_search.cli:main"
 xangi-search-extension = "xangi_search.extension:main"
+xangi-search-preflight-hook = "xangi_search.preflight_hook:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/xangi_search"]
@@ -30,6 +31,10 @@ exclude = ["/benchmarks", "/tests"]
 dev = [
   "pytest>=8.0.0",
   "ruff>=0.16,<0.17",
+]
+benchmark = [
+  "matplotlib>=3.10.0",
+  "tiktoken>=0.13.0",
 ]
 
 [tool.pytest.ini_options]

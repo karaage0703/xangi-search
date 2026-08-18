@@ -138,10 +138,17 @@ def test_setup_contract_includes_managed_runtime_and_usage_skill():
     assert "# xangi-search" in readme
     assert "# xangi-search" in readme_en
     setup = setup_path.read_text(encoding="utf-8")
-    assert "利用スキルを提案する" in setup
+    assert "利用スキルの追加・更新を提案する" in setup
+    assert "extension更新" in setup
+    assert "実質的な差分" in setup
+    assert "workspace変更の承認を兼ねません" in setup
     assert "uv sync --extra vector" in setup
     assert "XANGI_SEARCH_NO_VECTOR=true" in setup
     assert "fact利用を確認する" in setup
+    assert "回答前の事前検索を提案する" in setup
+    assert "xangi-search-preflight-hook" in setup
+    assert "--query-json-stdin" in setup
+    assert '"id": "xangi-search-preflight"' in setup
     assert "extension_request" in setup
     assert (root / "XANGI_SETUP.en.md").is_file()
     assert skill_path.is_file()
@@ -149,6 +156,7 @@ def test_setup_contract_includes_managed_runtime_and_usage_skill():
     assert skill.startswith("---\nname: xs-xangi-search\n")
     assert "## factを管理する" in skill
     assert "--path /facts/similar" in skill
+    assert "GET /facts/{id}" in skill
     assert "ADD/UPDATE/DELETE判断" in skill
     assert "http://127.0.0.1:7891" not in skill
     assert "AGENTS.md" in setup

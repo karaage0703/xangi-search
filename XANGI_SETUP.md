@@ -16,13 +16,48 @@
 
 検索index、任意のembedding、検索・自動index設定はworkspaceの`.xangi-search/`に保存するextension所有stateです。子processのportと認証tokenは親xangiが実行時だけ保持します。workspaceが異なる複数xangi instanceは互いに分離されます。同じworkspaceを複数instanceから同時更新する設定は行いません。既存indexはセットアップ時に削除しません。起動時と標準30分間隔で差分indexを行います。xangi scheduleやOSのcronへindex処理を重複登録しません。コマンドが失敗した場合は、設定を変更する前に実行したコマンドとエラーをそのまま報告します。
 
-## 利用スキルを提案する
+## 回答前の事前検索を提案する
 
-extensionの確認後、workspace内の既存構成を読み取り、同梱スキル`skills/xs-xangi-search/SKILL.md`の追加を提案します。
+xangiが`UserPromptSubmit` hookと`extension_request --query-json-stdin`に対応している場合、ユーザー入力をLLMへ渡す前にxangi-searchで1回だけ検索し、12,000文字以内の根拠候補を追加できます。これはxangiの汎用command hookを使う設定であり、xangi-search専用の処理をxangi本体へ追加しません。
+
+1. `xangi tool help extension_request`に`--query-json-stdin`が表示されることを確認します。未対応ならhookを設定せず、必要なxangi versionを報告します。
+2. リポジトリ内の`.venv/bin/xangi-search-preflight-hook`が実行可能であることを確認します。
+3. workspaceの`hooks/hooks.json`を読み、既存の`Stop`や他の`UserPromptSubmit` hookを保持したまま、次の追加差分をユーザーへ提示します。`<absolute-repository-path>`は現在のcheckoutの絶対pathへ置換します。
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "id": "xangi-search-preflight",
+        "exec": {
+          "file": "<absolute-repository-path>/.venv/bin/xangi-search-preflight-hook",
+          "args": []
+        },
+        "timeoutMs": 10000,
+        "maxOutputChars": 14000
+      }
+    ]
+  }
+}
+```
+
+このhookはwrapper展開前の現在のユーザー入力だけをstdin JSONで受け取り、親xangiの`extension_request`経由で`/search`を呼びます。会話履歴、system prompt、環境変数、認証tokenをxangi-searchへ渡しません。検索失敗・timeout・0件時は追加contextなしで通常応答を続けます。
+
+設定前に、永続的に毎turn実行されること、実行file、渡すデータ、10秒timeout、14,000文字の出力上限を明示し、次の選択肢を示します。
+
+- 推奨: 事前検索hookを追加
+- extensionとスキルだけ利用し、hookは追加しない
+
+選択されるまで`hooks/hooks.json`を変更しません。同じ`id`が既にある場合は重複追加せず、実行fileや上限が異なれば差分を示して再確認します。extensionを停止・削除する場合は、このhookも無効化または削除するか確認します。
+
+## 利用スキルの追加・更新を提案する
+
+初回setupまたはextension更新の確認後、workspace内の既存構成を読み取り、同梱スキル`skills/xs-xangi-search/SKILL.md`の追加または更新を必要な場合だけ提案します。
 
 1. workspaceに`skills/`、`.agents/skills/`、`.claude/skills/`のどれがあるか確認し、既存の配置規則を優先します。規則がなければ`skills/xs-xangi-search/`を提案します。
-2. 同名スキルがある場合は上書きせず、現在の内容との差分を示します。
-3. `AGENTS.md`がある場合は内容を読み、次のような最小ルールの追記案を示します。既存の指示と重複する項目は追加しません。
+2. 同名スキルがある場合は同梱版と比較します。API、操作手順、失敗時の扱いなどに実質的な差分がある場合だけ、理由、対象path、変更概要を示して更新を提案します。表記や整形だけの差分、またはworkspace側が同等以上の手順を持つ場合は提案しません。
+3. `AGENTS.md`がある場合は内容を読み、常時適用するルールに不足や古い記述がある時だけ、次のような最小変更を提案します。既存の指示やユーザー固有ルールを置換せず、重複する項目は追加しません。
 
 ```markdown
 ## xangi-search
@@ -33,13 +68,13 @@ extensionの確認後、workspace内の既存構成を読み取り、同梱ス�
 - 覚えておくべき永続的な事実は、類似factを検索してからADD・UPDATE・DELETEを判断する。
 ```
 
-提案時は、ユーザーへ次の選択肢を示します。
+追加または更新の提案が必要な時は、ユーザーへ次の選択肢を示します。
 
-- 推奨: スキル追加 + `AGENTS.md`への最小ルール追記
-- スキルだけ追加
+- 推奨: スキル追加・更新 + `AGENTS.md`への必要最小限の変更
+- スキルだけ追加・更新
 - workspaceは変更せず、extensionだけ利用
 
-選択されるまではworkspaceのスキルや`AGENTS.md`を変更しません。変更後は追加・更新したpathと差分を報告します。ユーザー向けの説明は会話で使われている言語に合わせます。
+extensionのsetupや更新を承認したことはworkspace変更の承認を兼ねません。選択されるまではworkspaceのスキルや`AGENTS.md`を変更しません。変更後は追加・更新したpath、差分、確認結果を報告します。更新不要ならworkspace変更の提案なしと明記します。ユーザー向けの説明は会話で使われている言語に合わせます。
 
 ## fact利用を確認する
 
@@ -47,8 +82,8 @@ extensionの確認後、workspace内の既存構成を読み取り、同梱ス�
 
 1. `GET /facts/similar?q=...&k=3`で既存factを検索できる。
 2. テスト用factを`POST /facts`で追加し、返されたIDを記録する。
-3. 同じIDを`PUT /facts/{id}`で更新し、`GET /facts`へ反映される。
-4. 同じIDを`DELETE /facts/{id}`で無効化し、`GET /facts`で`is_active: 0`になる。
+3. 同じIDを`PUT /facts/{id}`で更新し、`GET /facts/{id}`へ反映される。
+4. 同じIDを`DELETE /facts/{id}`で無効化し、`GET /facts/{id}`で`is_active: 0`になる。
 5. extensionを再起動し、通常のfactが保持されることを確認する。テスト用factは確認後に無効化する。
 
 factは長いログや文書の代わりではありません。1件につき1つの長期的に参照したい事実へ絞り、秘密情報を保存せず、可能なら`source_file`と`fact_date`を付けます。追加前に類似検索し、同じ事実の変更は新規ADDではなく既存IDのUPDATEを使います。子processのportや認証tokenは取得・記録しません。

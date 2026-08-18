@@ -37,6 +37,8 @@ recommended mode for normal use.
 The `FACT` tab lets you add, edit, and deactivate facts that should remain available over time.
 FACTs are also used in normal file search. Keep each entry focused on one fact instead of storing
 long logs or whole documents.
+The API can retrieve one entry with `GET /facts/{id}`, including inactive FACTs marked with
+`is_active: 0`.
 
 ### Settings
 
@@ -54,8 +56,9 @@ files are reindexed at startup and every 30 minutes.
 ## Use from an AI agent
 
 The bundled [`xs-xangi-search` skill](../../skills/xs-xangi-search/SKILL.md) provides procedures
-for search and FACT management. The setup flow does not add the skill or edit `AGENTS.md` until
-the user chooses to do so.
+for search and FACT management. During initial setup and after an extension update, the agent
+compares the bundled guidance with the workspace and proposes only material differences. It does
+not add the skill or edit `AGENTS.md` until the user chooses to do so.
 
 ## Use the standalone CLI
 
