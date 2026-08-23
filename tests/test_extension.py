@@ -115,7 +115,7 @@ def test_setup_contract_includes_managed_runtime_and_usage_skill():
     assert manifest["displayName"] == "xangi-search"
     assert manifest["ui"] == {"capability": "workspace.search", "path": "/ui"}
     assert manifest["agentBackend"] == {
-        "id": "workspace-search",
+        "id": "xangi-search",
         "displayName": "xangi-search",
         "capability": "workspace.search",
         "path": "/agent",
