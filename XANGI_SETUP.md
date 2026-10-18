@@ -12,7 +12,7 @@
 4. このsetup会話を実行しているxangi instanceを対象に`xangi extension start xangi-search`で起動します。別instanceを推測して接続しません。xangiのworkspaceは親runtime managerから渡されるため、extensionリポジトリのpathへ置き換えません。
 5. `xangi extension list`で`xangi-search`が`autostart`として登録されたことを確認します。
 6. `xangi extension status xangi-search`でservice起動を確認し、`xangi extension doctor xangi-search`が成功するまで初回indexの進捗を確認します。初回indexはバックグラウンドで動くため、`start`の成功だけでindex完了とみなしません。
-7. xangiのExtensions画面から`Open`を押して単独UIを開き、検索語を入力して複数結果が表示されること、実在ディレクトリの重みを含む設定が再読込後も維持されること、手動indexの状態が画面へ反映されること、`xangiへ戻る`で同じ環境のトップへ戻れることを確認します。service単体では`/ui`でも開けますが、xangiのURLを推測できないため戻るリンクは表示しません。
+7. xangiのExtensions画面から`Open`を押して単独UIを開き、検索語を入力して複数結果が表示されること、実在ディレクトリの重みを含む設定が再読込後も維持されること、手動indexの状態が画面へ反映されること、`xangiホーム`で同じ環境のトップへ戻れることを確認します。service単体では`/ui`でも開けますが、xangiのURLを推測できないため戻るリンクは表示しません。
 
 検索index、任意のembedding、検索・自動index設定はworkspaceの`.xangi-search/`に保存するextension所有stateです。子processのportと認証tokenは親xangiが実行時だけ保持します。workspaceが異なる複数xangi instanceは互いに分離されます。同じworkspaceを複数instanceから同時更新する設定は行いません。既存indexはセットアップ時に削除しません。起動時と標準30分間隔で差分indexを行います。xangi scheduleやOSのcronへindex処理を重複登録しません。コマンドが失敗した場合は、設定を変更する前に実行したコマンドとエラーをそのまま報告します。
 

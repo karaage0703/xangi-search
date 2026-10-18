@@ -329,6 +329,7 @@ def test_managed_initialization_keeps_health_responsive_and_routes_retryable(
         assert health["ready"] is False
         assert health["index_available"] is False
         assert health["initialization_phase"] == "loading_index"
+        assert health["startup"] == {"state": "initializing"}
         assert health["files"] == 0
 
         with pytest.raises(HTTPError) as unavailable:
@@ -353,6 +354,7 @@ def test_managed_initialization_keeps_health_responsive_and_routes_retryable(
         assert health["ready"] is True
         assert health["index_available"] is True
         assert health["initialization_phase"] == "ready"
+        assert health["startup"] == {"state": "complete"}
     finally:
         release.set()
         server.shutdown()
@@ -435,6 +437,7 @@ def test_managed_initialization_error_remains_observable(tmp_path: Path):
         assert status == 200
         assert health["ready"] is False
         assert health["initialization_error"] == "broken index"
+        assert health["startup"] == {"state": "failed"}
         assert health["detail"] == "initialization failed: broken index"
 
         with pytest.raises(HTTPError) as unavailable:
@@ -524,6 +527,7 @@ def test_fresh_attached_index_returns_503_until_first_reindex_succeeds(tmp_path:
         assert status == 200
         assert health["index_available"] is True
         assert health["usable_snapshot"] is False
+        assert health["startup"] == {"state": "complete"}
         assert health["ready"] is False
         assert health["reindex_in_progress"] is True
 

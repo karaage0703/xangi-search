@@ -8,7 +8,7 @@
     "localhostで検索serviceを起動",
     "workspaceの.xangi-search directoryへ検索indexと設定を保存"
   ],
-  "version": "0.2.1",
+  "version": "0.2.2",
   "entrypoint": ".venv/bin/xangi-search-extension",
   "runtime": {
     "kind": "managed-http"
@@ -38,5 +38,9 @@
       "protocol": "http",
       "healthPath": "/health"
     }
-  ]
+  ],
+  "startup": {
+    "exclusiveGroup": "gpu",
+    "timeoutSeconds": 120
+  }
 }

@@ -115,3 +115,7 @@ xangiのproxyまたはextension APIを経由し、子processのportやtokenを�
 repository管理版はmanifestの`update.prepare`で`./scripts/prepare-update`を宣言します。
 準備programは通常`uv sync --frozen --extra vector`、keyword-only構成では`uv sync --frozen`を
 実行します。sourceの切り替え、起動確認、doctor、失敗時のrollbackはxangiが担当します。
+
+### 初期化グループ
+
+manifestはstartup.exclusiveGroup=gpu、timeoutSeconds=120を宣言する。対応ホストは同じグループのモデル初期化を重ねない。healthのstartup.stateはモデルと索引の構築中initializing、構築完了complete、例外で終了failed。初期の再indexや利用可能なsnapshotとは別の状態で、ready=falseでも初期化完了を表せる。初期化の再試行やCPU切替は本変更に含まない。旧ホストは追加フィールドを無視する。

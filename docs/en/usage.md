@@ -105,3 +105,7 @@ Try a shorter query, switch to `Keyword`, lower the minimum score, and check the
 
 Settings and the index live under `.xangi-search/`. Removing it causes the data to be rebuilt, so
 review any FACTs and settings you need before doing so.
+
+### Startup ordering
+
+Supporting xangi hosts serialize initialization with other members of the gpu group. For CPU-only operation, set `"startup": null` on this extension's record in the host extensions.json. For separate GPUs use distinct exclusiveGroup labels and configure actual model devices separately. Hosts without this feature keep the previous startup behavior.

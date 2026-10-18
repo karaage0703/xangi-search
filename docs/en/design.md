@@ -117,3 +117,7 @@ Repository-managed builds declare `./scripts/prepare-update` through `update.pre
 manifest. The preparation program normally runs `uv sync --frozen --extra vector`, or
 `uv sync --frozen` for keyword-only setups. xangi owns source switching, startup verification,
 doctor checks, and rollback after a failed update.
+
+### Initialization group
+
+The manifest declares startup.exclusiveGroup=gpu with timeoutSeconds=120. Supporting hosts serialize model initialization for this group. Health startup.state is initializing while constructing the model/index, complete once constructed, or failed after an initialization exception. This is independent of initial reindexing and snapshot readiness. This change adds neither automatic retries nor CPU fallback. Older hosts ignore the added fields.
