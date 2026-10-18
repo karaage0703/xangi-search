@@ -551,6 +551,15 @@ class SearchHandler(BaseHTTPRequestHandler):
                     ],
                     "auto_reindex": settings["auto_reindex"],
                     "reindex_interval_seconds": settings["reindex_interval_seconds"],
+                    "startup": {
+                        "state": (
+                            "failed"
+                            if state["initialization_error"]
+                            else "complete"
+                            if state["initialization_phase"] == "ready"
+                            else "initializing"
+                        )
+                    },
                     "ready": ready,
                     "degraded": bool(ready and state["last_reindex_error"]),
                     "detail": detail,

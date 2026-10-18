@@ -68,9 +68,6 @@
       .header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px;
         padding-bottom: 22px; border-bottom: 1px solid var(--hairline); }
       .header-main { min-width: 0; }
-      .back-link { display: inline-flex; min-height: 40px; align-items: center; margin: 0 0 10px;
-        color: var(--accent-ink); font-size: 13px; font-weight: 700; text-decoration: none; }
-      .back-link:hover { text-decoration: underline; text-underline-offset: 3px; }
       .kicker { margin: 0 0 7px; color: var(--accent-ink); font-size: 11px; font-weight: 750;
         letter-spacing: .08em; text-transform: uppercase; }
       h1 { min-width: 0; margin: 0; font-size: clamp(27px, 5vw, 38px); line-height: 1.1;
@@ -201,13 +198,20 @@
         .weight-row { grid-template-columns: minmax(0, 1fr) 72px 40px; }
         .dialog-actions .button { flex: 1; }
       }
+.xangi-host-nav { display: flex; flex: 0 0 auto; align-items: center; padding: 8px 16px; background: #ffffff; border-bottom: 1px solid #d5dae2; }
+.xangi-host-nav[hidden] { display: none; }
+.xangi-home-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 0 14px; border: 1px solid #aab4c3; border-radius: 8px; background: #ffffff; color: #243247; font: 600 14px/1.4 system-ui, sans-serif; text-decoration: none; white-space: nowrap; }
+.xangi-home-button:hover { color: #17263c; background: #edf2f8; border-color: #74849a; text-decoration: none; }
+.xangi-home-button:focus-visible { outline: 3px solid #2563eb; outline-offset: 3px; }
+.xangi-home-button:active { background: #dce6f2; }
+.xangi-home-button svg { width: 18px; height: 18px; flex-shrink: 0; }
     </style>
   </head>
   <body>
+    <nav class="xangi-host-nav" id="xangiHostNav" aria-label="xangi共通ナビゲーション" hidden><a class="xangi-home-button" id="xangiHomeLink" href="/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg><span>xangiホーム</span></a></nav>
     <main class="shell">
       <header class="header">
         <div class="header-main">
-          <a class="back-link" id="xangiHomeLink" href="/" hidden>← xangiへ戻る</a>
           <p class="kicker">XANGI-SEARCH</p>
           <h1>xangi-search</h1>
           <p class="subtitle">入力に合わせて、ワークスペース内の関連ファイルをローカルで検索します。</p>
@@ -340,7 +344,7 @@
       const endpoint = (path) => `${apiBase}${path}`;
       const $ = (id) => document.getElementById(id);
       const state = { settings: null, health: null, timer: 0, controller: null, facts: [], editingFactId: null };
-      $('xangiHomeLink').hidden = !proxyMatch;
+      $('xangiHostNav').hidden = !proxyMatch;
 
       async function json(path, options) {
         const response = await fetch(endpoint(path), options);
