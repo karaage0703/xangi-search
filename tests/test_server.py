@@ -91,7 +91,7 @@ def test_http_contract(tmp_path: Path):
             "documents/": True,
             "sources/": True,
         }
-        assert settings["facts_snapshot_path"] == "knowledge/rag_facts.md"
+        assert settings["facts_snapshot_path"] == ".xangi-search/facts.md"
 
         status, payload = request(f"{base}/search?q=hello&mode=keyword&k=5")
         assert status == 200
@@ -231,7 +231,7 @@ def test_settings_are_persisted_and_become_search_defaults(tmp_path: Path):
                 "path_weights": {"hello/": 2.0},
                 "default_path_weight": 0.8,
                 "forgetting": True,
-                "facts_snapshot_path": "exports/facts/current.md",
+                "facts_snapshot_path": ".xangi-search/exports/current.md",
             },
         )
         assert status == 200
@@ -239,8 +239,8 @@ def test_settings_are_persisted_and_become_search_defaults(tmp_path: Path):
         assert settings["path_weights"] == {"hello/": 2.0}
         assert settings["path_weight_exists"] == {"hello/": False}
         assert settings["forgetting"] is True
-        assert settings["facts_snapshot_path"] == "exports/facts/current.md"
-        assert (tmp_path / "exports" / "facts" / "current.md").is_file()
+        assert settings["facts_snapshot_path"] == ".xangi-search/exports/current.md"
+        assert (tmp_path / ".xangi-search" / "exports" / "current.md").is_file()
         assert not (tmp_path / "knowledge").exists()
         settings_path = tmp_path / ".xangi-search" / "settings.json"
         assert settings_path.is_file()
@@ -260,7 +260,10 @@ def test_settings_are_persisted_and_become_search_defaults(tmp_path: Path):
 def test_settings_reject_fact_snapshot_symlink_outside_workspace(tmp_path: Path):
     outside = tmp_path.parent / f"{tmp_path.name}-outside"
     outside.mkdir()
-    (tmp_path / "outside-link").symlink_to(outside, target_is_directory=True)
+    (tmp_path / ".xangi-search").mkdir()
+    (tmp_path / ".xangi-search" / "outside-link").symlink_to(
+        outside, target_is_directory=True
+    )
     index = SearchIndex(tmp_path, tmp_path / "index.sqlite3")
     server = SearchServer(("127.0.0.1", 0), index)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -270,12 +273,12 @@ def test_settings_reject_fact_snapshot_symlink_outside_workspace(tmp_path: Path)
         status, _ = request(
             f"{base}/settings",
             "PUT",
-            {"facts_snapshot_path": "outside-link/facts.md"},
+            {"facts_snapshot_path": ".xangi-search/outside-link/facts.md"},
         )
         assert status == 400
         status, settings = request(f"{base}/settings")
         assert status == 200
-        assert settings["facts_snapshot_path"] == "knowledge/rag_facts.md"
+        assert settings["facts_snapshot_path"] == ".xangi-search/facts.md"
     finally:
         server.shutdown()
         server.server_close()
@@ -637,7 +640,7 @@ def test_facts_http_contract_and_search_integration(tmp_path: Path):
         status, settings = request(
             f"{base}/settings",
             "PUT",
-            {"facts_snapshot_path": "exports/facts.md"},
+            {"facts_snapshot_path": ".xangi-search/exports/facts.md"},
         )
         assert status == 200
         status, created = request(
@@ -645,7 +648,7 @@ def test_facts_http_contract_and_search_integration(tmp_path: Path):
         )
         assert status == 200
         fact_id = created["results"][0]["id"]
-        snapshot = tmp_path / "exports" / "facts.md"
+        snapshot = tmp_path / ".xangi-search" / "exports" / "facts.md"
         assert "猫の名前はウミ" in snapshot.read_text(encoding="utf-8")
 
         status, fetched = request(f"{base}/facts/{fact_id}")
@@ -711,4 +714,116 @@ def test_busy_query_encoder_degrades_explicitly_to_keyword(tmp_path: Path):
         server.server_close()
     finally:
         index._vector_search_lock.release()
+        index.close()
+
+
+def test_read_only_blocks_writes_but_keeps_search(tmp_path, monkeypatch):
+    monkeypatch.setenv("XANGI_SEARCH_READ_ONLY", "true")
+    (tmp_path / "hello.md").write_text("hello workspace")
+    index = SearchIndex(tmp_path)
+    index.reindex()
+    index.add_facts([{"text": "existing fact"}])
+    server = SearchServer(("127.0.0.1", 0), index)
+    monkeypatch.setenv("XANGI_SEARCH_READ_ONLY", "false")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    before = index.list_facts()
+    try:
+        for method, path, body in [
+            ("PUT", "/settings", {"read_only": False, "mode": "keyword"}),
+            ("PUT", "/facts/1", {"text": "changed"}),
+            ("POST", "/facts", {"facts": [{"text": "new"}]}),
+            ("POST", "/extract", {"facts": [{"text": "new"}]}),
+            ("POST", "/reindex", {}),
+            ("DELETE", "/facts/1", None),
+        ]:
+            status, payload = request(base + path, method, body)
+            assert status == 403, (method, path, payload)
+            assert payload["error"] == "read_only"
+        assert index.list_facts() == before
+        assert not server.settings.path.exists()
+        for path in [
+            "/health",
+            "/settings",
+            "/facts",
+            "/facts/1",
+            "/facts/similar?q=hello",
+            "/search?q=hello",
+            "/file?path=hello.md",
+            "/ui",
+        ]:
+            assert request(base + path)[0] == 200
+        assert request(base + "/settings")[1]["read_only"] is True
+        assert request(base + "/health")[1]["read_only"] is True
+        assert (
+            request(base + "/agent", "POST", {"schemaVersion": 1, "userText": "hello"})[
+                0
+            ]
+            == 200
+        )
+        # Internal lifecycle remains allowed; only remote mutation is disabled.
+        assert server.start_reindex("auto") is True
+        server.wait_for_workers()
+        assert server.reindex_count == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+        index.close()
+
+
+def test_settings_cannot_overwrite_workspace_markdown(tmp_path):
+    victim = tmp_path / "notes" / "a.md"
+    victim.parent.mkdir()
+    victim.write_text("keep my notes")
+    index = SearchIndex(tmp_path)
+    server = SearchServer(("127.0.0.1", 0), index)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        assert (
+            request(base + "/settings", "PUT", {"facts_snapshot_path": "notes/a.md"})[0]
+            == 400
+        )
+        assert victim.read_text() == "keep my notes"
+        assert not server.settings.path.exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        index.close()
+
+
+def test_legacy_snapshot_setting_migrates_without_touching_old_file(tmp_path):
+    from xangi_search.settings import SettingsStore
+
+    old = tmp_path / "exports" / "facts.md"
+    old.parent.mkdir()
+    content = "<!-- Generated by xangi-search. Do not edit directly. -->\n\n## fact #7\n\n- created: 2026-01-01\n\nlegacy fact\n"
+    old.write_text(content)
+    path = tmp_path / ".xangi-search" / "settings.json"
+    path.parent.mkdir()
+    path.write_text(
+        json.dumps(
+            {"mode": "keyword", "limit": 4, "facts_snapshot_path": "exports/facts.md"}
+        )
+    )
+    index = SearchIndex(tmp_path)
+    settings = SettingsStore(path)
+    server = SearchServer(("127.0.0.1", 0), index, settings)
+    try:
+        assert settings.get().mode == "keyword"
+        assert settings.get().limit == 4
+        assert settings.get().facts_snapshot_path == ".xangi-search/facts.md"
+        assert index.get_fact(7)["text"] == "legacy fact"
+        index.add_facts([{"text": "new fact"}])
+        assert old.read_text() == content
+        assert "legacy fact" in (tmp_path / ".xangi-search" / "facts.md").read_text()
+        settings.update({"limit": 5})
+        assert (
+            json.loads(path.read_text())["facts_snapshot_path"]
+            == ".xangi-search/facts.md"
+        )
+    finally:
+        server.server_close()
         index.close()

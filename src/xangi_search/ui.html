@@ -272,6 +272,7 @@
         <h2>検索とindexの設定</h2>
         <button class="icon-button" id="closeSettings" type="button" aria-label="閉じる">×</button>
       </div>
+      <p id="readOnlyNotice" hidden>読み取り専用です。設定とFACTの変更、手動の索引更新はできません。</p>
       <form class="settings-form" id="settingsForm">
         <label class="field"><span>検索方式</span>
           <select name="mode"><option value="hybrid">Hybrid</option><option value="vector">Vector</option><option value="keyword">Keyword</option></select>
@@ -282,8 +283,8 @@
           <small>0で候補を広く表示し、数値を上げるほど結果を絞ります。</small>
         </label>
         <label class="field"><span>FACT書き出し先</span>
-          <input name="facts_snapshot_path" type="text" autocomplete="off" placeholder="knowledge/rag_facts.md" />
-          <small>ワークスペースからの相対パスです。親ディレクトリがなくても自動作成します。</small>
+          <input name="facts_snapshot_path" type="text" autocomplete="off" placeholder=".xangi-search/facts.md" />
+          <small>.xangi-search/ 内のMarkdownを指定します。既存の通常ファイルは上書きしません。</small>
         </label>
         <fieldset class="weight-fieldset">
           <legend>ディレクトリごとの重み</legend>
@@ -343,7 +344,7 @@
       const apiBase = proxyMatch ? `/api/extensions/${encodeURIComponent(proxyMatch[1])}/service` : '';
       const endpoint = (path) => `${apiBase}${path}`;
       const $ = (id) => document.getElementById(id);
-      const state = { settings: null, health: null, timer: 0, controller: null, facts: [], editingFactId: null };
+      const state = { settings: null, readOnly: true, health: null, timer: 0, controller: null, facts: [], editingFactId: null };
       $('xangiHostNav').hidden = !proxyMatch;
 
       async function json(path, options) {
@@ -392,7 +393,7 @@
         }
         const last = health.last_reindex ? new Date(health.last_reindex).toLocaleString() : '未完了';
         $('indexDetail').textContent = `${health.files}ファイル・${health.chunks}チャンク。最終更新: ${last}`;
-        $('reindexButton').disabled = Boolean(health.reindex_in_progress);
+        $('reindexButton').disabled = state.readOnly || Boolean(health.reindex_in_progress);
         $('reindexButton').textContent = health.reindex_in_progress ? '更新中…' : '今すぐ更新';
       }
 
@@ -454,7 +455,8 @@
       }
 
       function populateSettings(settings) {
-        state.settings = settings; const form = $('settingsForm');
+        state.settings = settings; state.readOnly = settings.read_only === true;
+        const form = $('settingsForm');
         form.elements.mode.value = settings.mode;
         form.elements.limit.value = settings.limit;
         form.elements.min_score.value = settings.min_score;
@@ -464,6 +466,11 @@
         form.elements.forgetting.checked = settings.forgetting;
         form.elements.facts_snapshot_path.value = settings.facts_snapshot_path;
         renderPathWeights(settings.path_weights, settings.path_weight_exists);
+        form.querySelectorAll('input, select, button').forEach((control) => { control.disabled = state.readOnly; });
+        $('saveSettings').disabled = state.readOnly;
+        $('addFactButton').disabled = state.readOnly;
+        $('readOnlyNotice').hidden = !state.readOnly;
+        $('reindexButton').disabled = state.readOnly || Boolean(state.health?.reindex_in_progress);
         updateModeSummary();
       }
 
@@ -559,13 +566,16 @@
       }
 
       function openFactDialog(fact = null) {
+        if (state.readOnly && !fact) return;
         state.editingFactId = fact?.id ?? null;
         const form = $('factForm'); form.reset(); setError($('factError'), '');
-        $('factDialogTitle').textContent = fact ? `FACT #${fact.id}を編集` : 'FACTを追加';
+        $('factDialogTitle').textContent = state.readOnly ? `FACT #${fact.id}` : fact ? `FACT #${fact.id}を編集` : 'FACTを追加';
+        form.querySelectorAll('input, textarea').forEach((control) => { control.disabled = state.readOnly; });
+        $('saveFact').hidden = state.readOnly;
         form.elements.text.value = fact?.text || '';
         form.elements.source_file.value = fact?.source_file || '';
         form.elements.fact_date.value = fact?.fact_date || '';
-        $('deleteFact').hidden = !fact || !fact.is_active;
+        $('deleteFact').hidden = state.readOnly || !fact || !fact.is_active;
         $('deleteFact').dataset.confirming = '';
         $('deleteFact').textContent = '削除';
         $('factDialog').showModal();
@@ -589,7 +599,7 @@
       $('closeFact').addEventListener('click', () => $('factDialog').close());
       $('cancelFact').addEventListener('click', () => $('factDialog').close());
       $('factForm').addEventListener('submit', async (event) => {
-        event.preventDefault(); const form = event.currentTarget; $('saveFact').disabled = true;
+        event.preventDefault(); if (state.readOnly) return; const form = event.currentTarget; $('saveFact').disabled = true;
         setError($('factError'), '');
         try {
           const id = state.editingFactId;
@@ -601,6 +611,7 @@
         finally { $('saveFact').disabled = false; }
       });
       $('deleteFact').addEventListener('click', async () => {
+        if (state.readOnly) return;
         if (!$('deleteFact').dataset.confirming) {
           $('deleteFact').dataset.confirming = 'true'; $('deleteFact').textContent = 'もう一度押して削除'; return;
         }
@@ -612,7 +623,7 @@
       $('closeSettings').addEventListener('click', () => $('settingsDialog').close());
       $('cancelSettings').addEventListener('click', () => { populateSettings(state.settings); $('settingsDialog').close(); });
       $('settingsForm').addEventListener('submit', async (event) => {
-        event.preventDefault(); const form = event.currentTarget; $('saveSettings').disabled = true;
+        event.preventDefault(); if (state.readOnly) return; const form = event.currentTarget; $('saveSettings').disabled = true;
         setError($('settingsError'), '');
         try {
           const settings = await json('/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -628,6 +639,7 @@
         finally { $('saveSettings').disabled = false; }
       });
       $('reindexButton').addEventListener('click', async () => {
+        if (state.readOnly) return;
         $('reindexButton').disabled = true; setError($('settingsError'), '');
         try { await json('/reindex', { method: 'POST' }); await refreshHealth(); }
         catch (cause) { setError($('settingsError'), cause.message || String(cause)); }
