@@ -73,6 +73,20 @@ Incremental indexing runs at startup and at the configured interval. Once the `S
 attached, an existing index becomes searchable while the startup refresh continues in the
 background.
 
+The default `intfloat/multilingual-e5-small` and its `base`/`large` siblings use
+`query: ` for queries and `passage: ` for documents and FACTs. Instruct variants,
+other models, and local paths retain their own prompt policy.
+
+SQLite `embedding_metadata` stores the model name, prompts, maximum input length,
+and encoding policy. When these change, or a legacy index has no metadata, stored
+chunks and active FACTs are re-embedded in batches of 64 before serving queries.
+Text, IDs, and access history are preserved. Vectors and metadata commit together
+only after success; failure rolls back and fails initialization, allowing a retry
+on the next startup. The first upgrade may therefore take longer than usual.
+Keyword-only sessions preserve metadata; returning to vector mode also fills
+missing embeddings. Replacing weights under the same model name is not detected.
+Custom embedders can opt in with a stable string `embedding_signature` attribute.
+
 ## FACTs
 
 FACTs are structured facts stored in SQLite. Each add, update, or deactivation writes a Markdown

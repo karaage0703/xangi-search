@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import heapq
+import json
 import math
 import os
 import re
@@ -174,21 +175,44 @@ class SentenceTransformerEmbedder:
 
         self.model_name = model_name
         self.model = SentenceTransformer(model_name)
-
-    def __call__(self, texts: Sequence[str], *, query: bool = False) -> np.ndarray:
-        encoder = (
-            self.model.encode_query
-            if query and hasattr(self.model, "encode_query")
+        # Instruct variants and unrelated models have different prompt policies.
+        self._e5_prompts = (
+            {"query": "query: ", "document": "passage: "}
+            if model_name
+            in {
+                "intfloat/multilingual-e5-small",
+                "intfloat/multilingual-e5-base",
+                "intfloat/multilingual-e5-large",
+            }
             else None
         )
-        if encoder is None:
-            encoder = (
-                self.model.encode_document
-                if hasattr(self.model, "encode_document")
-                else self.model.encode
-            )
+        self.embedding_signature = json.dumps(
+            {
+                "version": 1,
+                "model": model_name,
+                "prompts": self._e5_prompts or self.model.prompts,
+                "default_prompt_name": self.model.default_prompt_name,
+                "max_seq_length": self.model.max_seq_length,
+                "normalize_embeddings": True,
+                "encode_query": hasattr(self.model, "encode_query"),
+                "encode_document": hasattr(self.model, "encode_document"),
+            },
+            sort_keys=True,
+        )
+
+    def __call__(self, texts: Sequence[str], *, query: bool = False) -> np.ndarray:
+        encoder = getattr(
+            self.model,
+            "encode_query" if query else "encode_document",
+            self.model.encode,
+        )
+        kwargs = {}
+        if self._e5_prompts is not None:
+            # Explicit prompt also works with ST 3.x's plain encode fallback,
+            # and overrides model defaults without double-prefixing the input.
+            kwargs["prompt"] = self._e5_prompts["query" if query else "document"]
         values = encoder(
-            list(texts), normalize_embeddings=True, show_progress_bar=False
+            list(texts), normalize_embeddings=True, show_progress_bar=False, **kwargs
         )
         return np.asarray(values, dtype=np.float32)
 
@@ -227,7 +251,12 @@ class SearchIndex:
         self._facts_snapshot_path = DEFAULT_FACTS_SNAPSHOT_PATH
         self._init_db()
         self._import_legacy_facts_snapshot()
-        self._ensure_fact_embeddings()
+        try:
+            self._ensure_embedding_configuration()
+            self._ensure_fact_embeddings()
+        except Exception:
+            self.connection.close()
+            raise
         self._reload_vector_cache()
         self._reload_fact_cache()
 
@@ -256,6 +285,10 @@ class SearchIndex:
         self.connection.executescript(
             """
             PRAGMA journal_mode=WAL;
+            CREATE TABLE IF NOT EXISTS embedding_metadata (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                signature TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS files (
                 path TEXT PRIMARY KEY,
                 sha256 TEXT NOT NULL,
@@ -315,6 +348,58 @@ class SearchIndex:
                 "INSERT INTO chunks_fts(chunks_fts) VALUES ('rebuild')"
             )
         self.connection.commit()
+
+    def _ensure_embedding_configuration(self) -> None:
+        """Migrate before serving queries; keep vectors and metadata atomic.
+
+        Custom embedders may opt in with a stable embedding_signature string.
+        Keyword-only sessions leave the last vector configuration intact.
+        """
+        signature = getattr(self.embedder, "embedding_signature", None)
+        if signature is None:
+            return
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            row = self.connection.execute(
+                "SELECT signature FROM embedding_metadata WHERE id = 1"
+            ).fetchone()
+            changed = row is None or row["signature"] != signature
+            for table, text_column in (("chunks", "content"), ("facts", "text")):
+                condition = "1 = 1" if changed else "embedding IS NULL"
+                if table == "facts":
+                    condition += " AND is_active = 1"
+                last_id = -1
+                while True:
+                    rows = self.connection.execute(
+                        f"SELECT id, {text_column} FROM {table} "
+                        f"WHERE {condition} AND id > ? ORDER BY id LIMIT 64",
+                        (last_id,),
+                    ).fetchall()
+                    if not rows:
+                        break
+                    matrix = np.asarray(
+                        self.embedder([row[text_column] for row in rows], query=False),
+                        dtype=np.float32,
+                    )
+                    if matrix.ndim != 2 or len(matrix) != len(rows):
+                        raise ValueError("Embedder returned an invalid batch shape")
+                    self.connection.executemany(
+                        f"UPDATE {table} SET embedding = ? WHERE id = ?",
+                        [
+                            (vector.tobytes(), row["id"])
+                            for row, vector in zip(rows, matrix)
+                        ],
+                    )
+                    last_id = rows[-1]["id"]
+            if changed:
+                self.connection.execute(
+                    "UPDATE facts SET embedding = NULL WHERE is_active = 0"
+                )
+            self.connection.execute(
+                "INSERT INTO embedding_metadata(id, signature) VALUES (1, ?) "
+                "ON CONFLICT(id) DO UPDATE SET signature = excluded.signature",
+                (signature,),
+            )
 
     def _iter_files(self) -> Iterable[Path]:
         for root, directories, files in os.walk(self.workspace, followlinks=False):
