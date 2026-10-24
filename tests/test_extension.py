@@ -10,9 +10,13 @@ from urllib.request import Request, urlopen
 import pytest
 
 
-def test_managed_entrypoint_uses_ephemeral_port_and_parent_lifecycle(tmp_path: Path):
+@pytest.mark.parametrize("read_only", [False, True])
+def test_managed_entrypoint_uses_ephemeral_port_and_parent_lifecycle(
+    tmp_path: Path, read_only
+):
     token = "test-managed-extension-token"
     env = {**os.environ, "XANGI_EXTENSION_AUTH_TOKEN": token}
+    env["XANGI_SEARCH_READ_ONLY"] = str(read_only).lower()
     process = subprocess.Popen(
         [
             sys.executable,
@@ -49,6 +53,16 @@ def test_managed_entrypoint_uses_ephemeral_port_and_parent_lifecycle(tmp_path: P
         with urlopen(request, timeout=2) as response:
             health = json.load(response)
         assert health["service"] == "xangi-search"
+        assert health["read_only"] is read_only
+        if read_only:
+            write = Request(
+                f"{ready['baseUrl']}/reindex",
+                method="POST",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            with pytest.raises(HTTPError) as forbidden:
+                urlopen(write, timeout=2)
+            assert forbidden.value.code == 403
 
         assert process.stdin is not None
         process.stdin.close()
