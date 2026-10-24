@@ -106,6 +106,23 @@ Try a shorter query, switch to `Keyword`, lower the minimum score, and check the
 Settings and the index live under `.xangi-search/`. Removing it causes the data to be rebuilt, so
 review any FACTs and settings you need before doing so.
 
+### Exclude workspace paths
+
+Use `exclude_paths` in `PUT /settings` to exclude literal workspace-relative files or directories.
+The default is an empty array; built-in exclusions remain active. Globs, absolute paths and `..` are rejected.
+A directory excludes its descendants, not sibling directories with a similar name.
+
+```json
+{"exclude_paths": ["output", ".cache", "logs/monitor-activity", "logs/tool-trajectory"]}
+```
+
+Saving exclusions or opening an existing index immediately removes excluded text, FTS entries and vectors, even with auto reindex disabled. Source files and FACTs are retained.
+SQLite does not automatically shrink the physical database file.
+To restore paths, remove them from the list and reindex. Settings persist in `.xangi-search/settings.json`
+and also apply to CLI indexing. Edit this setting in the settings dialog (one relative path per line) or through the API.
+
+Environment files (`.env`, `.env.*`, `*.env`, case-insensitive at any depth) are always excluded from indexing and both grep implementations. Path weights of zero are not exclusions: candidate selection happens before weighting. Use `exclude_paths` to keep logs from consuming candidates. Logical deletion does not guarantee forensic erasure from database pages, backups or previously copied logs.
+
 ### Startup ordering
 
 Supporting xangi hosts serialize initialization with other members of the gpu group. For CPU-only operation, set `"startup": null` on this extension's record in the host extensions.json. For separate GPUs use distinct exclusiveGroup labels and configure actual model devices separately. Hosts without this feature keep the previous startup behavior.

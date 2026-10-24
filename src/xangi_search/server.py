@@ -24,6 +24,7 @@ from .index import (
 from .settings import (
     SettingsStore,
     default_settings_path,
+    path_is_excluded,
     validate_facts_snapshot_path,
 )
 
@@ -55,6 +56,7 @@ class SearchServer(ThreadingHTTPServer):
             default_path_weights=initial_path_weights(resolved_workspace),
         )
         if index is not None:
+            index.configure_exclude_paths(self.settings.get().exclude_paths)
             index.configure_facts_snapshot(
                 self.settings.get().facts_snapshot_path, import_if_empty=True
             )
@@ -132,6 +134,7 @@ class SearchServer(ThreadingHTTPServer):
                 if self.stop_event.is_set():
                     return
                 created = factory(self.set_initialization_phase)
+                created.configure_exclude_paths(self.settings.get().exclude_paths)
                 created.configure_facts_snapshot(
                     self.settings.get().facts_snapshot_path,
                     import_if_empty=True,
@@ -235,7 +238,12 @@ class SearchServer(ThreadingHTTPServer):
         else:
             grep_results = [
                 result
-                for result in grep_search(query, self.workspace, max_results=5)
+                for result in grep_search(
+                    query,
+                    self.workspace,
+                    max_results=5,
+                    exclude_paths=defaults.exclude_paths,
+                )
                 if result["file_path"] not in rag_files
             ]
         finished = time.perf_counter()
@@ -691,6 +699,8 @@ class SearchHandler(BaseHTTPRequestHandler):
                 index.validate_facts_snapshot_location(candidate)
             settings = self.server.settings.update(body)
             index.configure_facts_snapshot(settings.facts_snapshot_path)
+            index.configure_exclude_paths(settings.exclude_paths)
+            self.server.refresh_cached_stats()
         except ValueError as error:
             self._json(400, {"error": str(error)})
             return
@@ -917,8 +927,16 @@ def format_agent_results(
 
 
 def grep_search(
-    query: str, workspace: Path, max_results: int = 10
+    query: str,
+    workspace: Path,
+    max_results: int = 10,
+    *,
+    exclude_paths: list[str] | None = None,
 ) -> list[dict[str, str]]:
+    if exclude_paths is None:
+        exclude_paths = (
+            SettingsStore(default_settings_path(workspace)).get().exclude_paths
+        )
     command = [
         "rg",
         "-i",
@@ -966,7 +984,9 @@ def grep_search(
             command, capture_output=True, text=True, timeout=5, check=False
         )
     except FileNotFoundError:
-        return python_grep_search(query, workspace, max_results)
+        return python_grep_search(
+            query, workspace, max_results, exclude_paths=exclude_paths
+        )
     except (subprocess.TimeoutExpired, OSError):
         return []
     files_found: list[str] = []
@@ -978,7 +998,10 @@ def grep_search(
             absolute = absolute.resolve()
             absolute.relative_to(workspace.resolve())
             relative = Path(os.path.relpath(absolute, workspace)).as_posix()
-            if relative not in files_found:
+            if (
+                not path_is_excluded(relative, exclude_paths)
+                and relative not in files_found
+            ):
                 files_found.append(relative)
         except (TypeError, ValueError):
             continue
@@ -1010,8 +1033,16 @@ def grep_search(
 
 
 def python_grep_search(
-    query: str, workspace: Path, max_results: int = 10
+    query: str,
+    workspace: Path,
+    max_results: int = 10,
+    *,
+    exclude_paths: list[str] | None = None,
 ) -> list[dict[str, str]]:
+    if exclude_paths is None:
+        exclude_paths = (
+            SettingsStore(default_settings_path(workspace)).get().exclude_paths
+        )
     needle = query.casefold()
     if not needle:
         return []
@@ -1039,12 +1070,18 @@ def python_grep_search(
                 extra_patterns=GREP_EXTRA_EXCLUDE_DIRECTORY_PATTERNS,
             )
             and not (Path(root) / name).is_symlink()
+            and not path_is_excluded(
+                (Path(root) / name).relative_to(workspace).as_posix(), exclude_paths
+            )
         ]
         for name in filenames:
             path = Path(root) / name
             lower_name = name.lower()
             if (
                 path.is_symlink()
+                or path_is_excluded(
+                    path.relative_to(workspace).as_posix(), exclude_paths
+                )
                 or path.suffix.lower() in excluded_suffixes
                 or path.suffix.lower() == ".js"
                 or lower_name.endswith((".min.js", ".bundle.js"))

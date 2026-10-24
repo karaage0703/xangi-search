@@ -18,6 +18,13 @@ from pathlib import Path
 
 import numpy as np
 
+from .settings import (
+    SettingsStore,
+    default_settings_path,
+    path_is_excluded,
+    validate_exclude_paths,
+)
+
 DEFAULT_MODEL = "intfloat/multilingual-e5-small"
 DEFAULT_INCLUDE_EXTENSIONS = {
     ".bash",
@@ -27,7 +34,6 @@ DEFAULT_INCLUDE_EXTENSIONS = {
     ".css",
     ".csv",
     ".el",
-    ".env",
     ".fish",
     ".gitattributes",
     ".gitignore",
@@ -73,8 +79,6 @@ DEFAULT_INCLUDE_EXTENSIONS = {
 DEFAULT_INCLUDE_NAMES = {
     ".dockerignore",
     ".dockerfile",
-    ".env",
-    ".env.example",
     ".gitattributes",
     ".gitignore",
     "authors",
@@ -207,6 +211,9 @@ class SearchIndex:
         if query_encode_wait_seconds < 0:
             raise ValueError("query_encode_wait_seconds must not be negative")
         self.workspace = workspace.resolve()
+        self.exclude_paths = tuple(
+            SettingsStore(default_settings_path(self.workspace)).get().exclude_paths
+        )
         self.db_path = db_path or default_db_path(self.workspace)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embedder = embedder
@@ -226,6 +233,7 @@ class SearchIndex:
         self._fact_matrix = np.empty((0, 0), dtype=np.float32)
         self._facts_snapshot_path = DEFAULT_FACTS_SNAPSHOT_PATH
         self._init_db()
+        self.configure_exclude_paths(list(self.exclude_paths))
         self._import_legacy_facts_snapshot()
         self._ensure_fact_embeddings()
         self._reload_vector_cache()
@@ -316,7 +324,29 @@ class SearchIndex:
             )
         self.connection.commit()
 
+    def configure_exclude_paths(self, paths: list[str]) -> None:
+        validated = tuple(validate_exclude_paths(paths))
+        with self._write_lock:
+            self.exclude_paths = validated
+            # Purge before serving the new policy, even with automatic indexing off.
+            paths_to_remove = {
+                row[0]
+                for row in self.connection.execute(
+                    "SELECT path FROM files UNION SELECT file_path FROM chunks"
+                )
+                if path_is_excluded(row[0], validated)
+            }
+            with self.connection:
+                for path in paths_to_remove:
+                    self.connection.execute(
+                        "DELETE FROM chunks WHERE file_path = ?", (path,)
+                    )
+                    self.connection.execute("DELETE FROM files WHERE path = ?", (path,))
+            if paths_to_remove:
+                self._reload_vector_cache()
+
     def _iter_files(self) -> Iterable[Path]:
+        excluded = self.exclude_paths
         for root, directories, files in os.walk(self.workspace, followlinks=False):
             at_workspace_root = Path(root) == self.workspace
             directories[:] = [
@@ -324,6 +354,9 @@ class SearchIndex:
                 for name in directories
                 if not is_excluded_directory(name, at_workspace_root=at_workspace_root)
                 and not (Path(root) / name).is_symlink()
+                and not path_is_excluded(
+                    (Path(root) / name).relative_to(self.workspace).as_posix(), excluded
+                )
             ]
             for name in files:
                 path = Path(root) / name
@@ -336,6 +369,8 @@ class SearchIndex:
                 ):
                     continue
                 relative_posix = relative.as_posix()
+                if path_is_excluded(relative_posix, excluded):
+                    continue
                 lower_name = path.name.lower()
                 if relative_posix in {
                     DEFAULT_FACTS_SNAPSHOT_PATH,
@@ -822,6 +857,10 @@ class SearchIndex:
                     )
                 base_score = score
                 row = rows_by_id.get(chunk_id)
+                if row is not None and path_is_excluded(
+                    row["file_path"], self.exclude_paths
+                ):
+                    continue
                 path_weight = (
                     self._path_weight(row["file_path"], weights, default_path_weight)
                     if row is not None

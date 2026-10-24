@@ -20,6 +20,7 @@ class SearchSettings:
     default_path_weight: float = 1.0
     forgetting: bool = False
     facts_snapshot_path: str = "knowledge/rag_facts.md"
+    exclude_paths: list[str] = field(default_factory=list)
 
 
 class SettingsStore:
@@ -132,6 +133,7 @@ def validate_settings(
         default_path_weight=default_path_weight,
         forgetting=forgetting,
         facts_snapshot_path=facts_snapshot_path,
+        exclude_paths=validate_exclude_paths(payload.get("exclude_paths", [])),
     )
 
 
@@ -199,3 +201,36 @@ def validate_path_weights(value: object) -> dict[str, float]:
 
 def default_settings_path(workspace: Path) -> Path:
     return workspace.resolve() / ".xangi-search" / "settings.json"
+
+
+def validate_exclude_paths(value: object) -> list[str]:
+    if not isinstance(value, list) or len(value) > 100:
+        raise ValueError("exclude_paths must be an array of at most 100 relative paths")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError("exclude_paths entries must be relative paths")
+        candidate = item.strip().replace("\\", "/")
+        parts = [part for part in candidate.split("/") if part not in {"", "."}]
+        if (
+            not parts
+            or candidate.startswith("/")
+            or ".." in parts
+            or any(char in candidate for char in "*?[]:\x00\n\r")
+        ):
+            raise ValueError(
+                "exclude_paths entries must be literal workspace-relative paths"
+            )
+        normalized = "/".join(parts)
+        if normalized not in result:
+            result.append(normalized)
+    return result
+
+
+def path_is_excluded(relative: str, exclude_paths: list[str] | tuple[str, ...]) -> bool:
+    name = relative.rsplit("/", 1)[-1].lower()
+    if name == ".env" or name.startswith(".env.") or name.endswith(".env"):
+        return True
+    return any(
+        relative == path or relative.startswith(path + "/") for path in exclude_paths
+    )

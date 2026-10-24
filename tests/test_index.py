@@ -299,7 +299,7 @@ def test_reindex_keeps_legacy_text_types_and_prunes_generated_files(tmp_path: Pa
     paths = {
         result.file_path for result in index.search("legacy", mode="keyword", limit=10)
     }
-    assert paths == {".dockerignore", ".env", "schema.graphql", "script.bash"}
+    assert paths == {".dockerignore", "schema.graphql", "script.bash"}
     index.close()
 
 

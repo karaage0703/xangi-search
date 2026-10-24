@@ -285,6 +285,10 @@
           <input name="facts_snapshot_path" type="text" autocomplete="off" placeholder="knowledge/rag_facts.md" />
           <small>ワークスペースからの相対パスです。親ディレクトリがなくても自動作成します。</small>
         </label>
+        <label class="field"><span>検索から除外するパス</span>
+          <textarea name="exclude_paths" rows="4" placeholder="logs&#10;output"></textarea>
+          <small>相対パスを1行に1件入力します。保存すると既存の検索データからも除外します。解除後は「今すぐ更新」で再登録できます。環境ファイル（.envなど）は常に除外します。</small>
+        </label>
         <fieldset class="weight-fieldset">
           <legend>ディレクトリごとの重み</legend>
           <p class="weight-help">ワークスペースからの相対パスと倍率です。長く一致するパスを優先します。</p>
@@ -463,6 +467,7 @@
         form.elements.default_path_weight.value = settings.default_path_weight;
         form.elements.forgetting.checked = settings.forgetting;
         form.elements.facts_snapshot_path.value = settings.facts_snapshot_path;
+        form.elements.exclude_paths.value = (settings.exclude_paths || []).join("\n");
         renderPathWeights(settings.path_weights, settings.path_weight_exists);
         updateModeSummary();
       }
@@ -620,6 +625,7 @@
               min_score: Number(form.elements.min_score.value), auto_reindex: form.elements.auto_reindex.checked,
               reindex_interval_seconds: Number(form.elements.interval_minutes.value) * 60,
               path_weights: collectPathWeights(),
+              exclude_paths: form.elements.exclude_paths.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean),
               default_path_weight: Number(form.elements.default_path_weight.value),
               forgetting: form.elements.forgetting.checked,
               facts_snapshot_path: form.elements.facts_snapshot_path.value.trim() }) });
