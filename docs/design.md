@@ -116,6 +116,10 @@ repository管理版はmanifestの`update.prepare`で`./scripts/prepare-update`�
 準備programは通常`uv sync --frozen --extra vector`、keyword-only構成では`uv sync --frozen`を
 実行します。sourceの切り替え、起動確認、doctor、失敗時のrollbackはxangiが担当します。
 
+workspace固有の`exclude_paths`は設定storeで検証し、index初期化・設定更新時に適用します。ディレクトリ走査の枝刈り、既存候補のフィルタ、grep補助検索に同じ相対パス境界判定を使います。起動・設定保存時に除外対象の既存チャンク・ベクトルを削除し、FACTと元ファイルは保持します。
+
+環境ファイル（`.env`、`.env.*`、`*.env`、大小文字・階層不問）は索引と両grep経路で常に除外します。設定画面の「検索から除外するパス」に相対パスを1行1件入力できます。起動時・設定保存時に既存本文・FTS・ベクトルも削除し、自動indexが無効でも適用します。元ファイルとFACTは保持し、除外解除後は「今すぐ更新」で再登録できます。重み0は候補選定後の調整なので、ログの候補占有を防ぐには除外設定を使います。DBの論理削除は、未使用ページ・バックアップ・過去ログからの完全消去を保証しません。
+
 ### 初期化グループ
 
 manifestはstartup.exclusiveGroup=gpu、timeoutSeconds=120を宣言する。対応ホストは同じグループのモデル初期化を重ねない。healthのstartup.stateはモデルと索引の構築中initializing、構築完了complete、例外で終了failed。初期の再indexや利用可能なsnapshotとは別の状態で、ready=falseでも初期化完了を表せる。初期化の再試行やCPU切替は本変更に含まない。旧ホストは追加フィールドを無視する。
