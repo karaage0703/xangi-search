@@ -90,10 +90,16 @@ Custom embedders can opt in with a stable string `embedding_signature` attribute
 ## FACTs
 
 FACTs are structured facts stored in SQLite. Each add, update, or deactivation writes a Markdown
-snapshot. The default output path is `knowledge/rag_facts.md`.
+snapshot. The default output path is `.xangi-search/facts.md`.
 
-The snapshot must be a workspace-relative `.md` path. Absolute paths, locations outside the
-workspace, `.git/`, and `.xangi-search/` are rejected.
+The snapshot must be a `.md` path under the workspace’s `.xangi-search/` directory.
+Symlinks and existing files without the generated snapshot header are rejected. Exports use
+a unique temporary file, so existing temporary files are not overwritten.
+
+`XANGI_SEARCH_READ_ONLY=true` is captured when the server is constructed. After authentication,
+PUT/DELETE and POST requests other than `POST /agent` return 403. GET, agent search, startup
+indexing and periodic indexing remain available. This is an API mutation restriction, not a
+read-only filesystem mode; search access statistics still update.
 
 ## Persistence
 

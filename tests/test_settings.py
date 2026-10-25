@@ -14,7 +14,7 @@ def test_settings_store_reloads_saved_values(tmp_path: Path):
             "mode": "keyword",
             "limit": 4,
             "reindex_interval_seconds": 900,
-            "facts_snapshot_path": "notes/system/facts.md",
+            "facts_snapshot_path": ".xangi-search/system/facts.md",
         }
     )
 
@@ -23,7 +23,7 @@ def test_settings_store_reloads_saved_values(tmp_path: Path):
     assert reloaded["limit"] == 4
     assert reloaded["reindex_interval_seconds"] == 900
     assert reloaded["path_weights"] == {}
-    assert reloaded["facts_snapshot_path"] == "notes/system/facts.md"
+    assert reloaded["facts_snapshot_path"] == ".xangi-search/system/facts.md"
     assert json.loads(path.read_text())["schema_version"] == 1
 
 
@@ -88,7 +88,7 @@ def test_settings_store_rejects_invalid_path_weights(tmp_path: Path, path_weight
         "../facts.md",
         "notes/facts.txt",
         ".git/facts.md",
-        ".xangi-search/facts.md",
+        "notes/facts.md",
         "C:/facts.md",
     ],
 )
@@ -102,5 +102,5 @@ def test_settings_store_rejects_unsafe_facts_snapshot_paths(
 
 def test_settings_store_normalizes_facts_snapshot_path(tmp_path: Path):
     store = SettingsStore(tmp_path / "settings.json")
-    updated = store.update({"facts_snapshot_path": "notes\\system\\facts.md"})
-    assert updated.facts_snapshot_path == "notes/system/facts.md"
+    updated = store.update({"facts_snapshot_path": ".xangi-search\\system\\facts.md"})
+    assert updated.facts_snapshot_path == ".xangi-search/system/facts.md"

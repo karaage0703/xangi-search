@@ -109,3 +109,22 @@ review any FACTs and settings you need before doing so.
 ### Startup ordering
 
 Supporting xangi hosts serialize initialization with other members of the gpu group. For CPU-only operation, set `"startup": null` on this extension's record in the host extensions.json. For separate GPUs use distinct exclusiveGroup labels and configure actual model devices separately. Hosts without this feature keep the previous startup behavior.
+
+### Read-only API mode
+
+Set `XANGI_SEARCH_READ_ONLY=true` in the server process environment to reject settings changes,
+FACT additions/edits/deletions, and manual reindex requests with HTTP 403. It is disabled by default.
+GET requests, `POST /agent`, startup indexing, and periodic incremental indexing continue to work.
+The UI displays settings and FACTs with mutation controls disabled. `GET /settings` and
+`GET /health` expose `read_only`. The API cannot disable this mode: change the launch environment
+and restart the process. This restricts HTTP mutations, not filesystem permissions or local CLI writes.
+
+### Migrating FACT snapshots
+
+Snapshots must be Markdown files under `.xangi-search/`; the default is `.xangi-search/facts.md`.
+Existing files without the generated header and symlinks are never overwritten.
+An old setting outside this directory is mapped to the new default at startup, preserving other
+search settings. The settings file is updated on the next settings save; the snapshot is written
+on the next FACT mutation. Existing SQLite FACTs are retained. If the database is empty, the old
+default snapshot or old configured snapshot is imported. Old files are not modified or deleted.
+Include `.xangi-search/facts.md` and the SQLite database in your backups.
