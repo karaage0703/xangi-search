@@ -138,6 +138,12 @@ manifest. The preparation program normally runs `uv sync --frozen --extra vector
 `uv sync --frozen` for keyword-only setups. xangi owns source switching, startup verification,
 doctor checks, and rollback after a failed update.
 
+Workspace-specific `exclude_paths` are validated by the settings store and applied during index initialization and settings updates. Directory pruning, existing candidate filtering and grep fallback share the same relative-path boundary check. Initialization and settings updates immediately remove excluded chunks and vectors while retaining source files and FACTs.
+
+The settings store treats only a missing file as an initial state. Read, JSON parsing, and validation failures propagate as SettingsLoadError, blocking index construction and fallback search. API updates persist settings only after successful validation.
+
+Environment files (`.env`, `.env.*`, `*.env`, case-insensitive at any depth) are always excluded from indexing and both grep implementations. Path weights of zero are not exclusions: candidate selection happens before weighting. Use `exclude_paths` to keep logs from consuming candidates. Logical deletion does not guarantee forensic erasure from database pages, backups or previously copied logs.
+
 ### Initialization group
 
 The manifest declares startup.exclusiveGroup=gpu with timeoutSeconds=120. Supporting hosts serialize model initialization for this group. Health startup.state is initializing while constructing the model/index, complete once constructed, or failed after an initialization exception. This is independent of initial reindexing and snapshot readiness. This change adds neither automatic retries nor CPU fallback. Older hosts ignore the added fields.
