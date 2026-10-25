@@ -50,6 +50,12 @@ class SearchServer(ThreadingHTTPServer):
             index.workspace if index is not None else workspace
         ).resolve()
         self.workspace = resolved_workspace
+        self.read_only = os.environ.get("XANGI_SEARCH_READ_ONLY", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         self.index = index
         self.settings = settings or SettingsStore(
             default_settings_path(resolved_workspace),
@@ -58,7 +64,9 @@ class SearchServer(ThreadingHTTPServer):
         if index is not None:
             index.configure_exclude_paths(self.settings.get().exclude_paths)
             index.configure_facts_snapshot(
-                self.settings.get().facts_snapshot_path, import_if_empty=True
+                self.settings.get().facts_snapshot_path,
+                import_if_empty=True,
+                legacy_path=self.settings.legacy_facts_snapshot_path,
             )
         self.auth_token = auth_token
         self.reindex_lock = threading.Lock()
@@ -99,6 +107,7 @@ class SearchServer(ThreadingHTTPServer):
 
     def settings_payload(self) -> dict[str, object]:
         payload = self.settings.payload()
+        payload["read_only"] = self.read_only
         directories = discover_workspace_directories(self.workspace)
         payload["workspace_directories"] = directories
         payload["path_weight_exists"] = {
@@ -138,6 +147,7 @@ class SearchServer(ThreadingHTTPServer):
                 created.configure_facts_snapshot(
                     self.settings.get().facts_snapshot_path,
                     import_if_empty=True,
+                    legacy_path=self.settings.legacy_facts_snapshot_path,
                 )
                 stats = created.stats()
                 attached = False
@@ -557,6 +567,7 @@ class SearchHandler(BaseHTTPRequestHandler):
                         "workspace.ui",
                         "workspace.facts",
                     ],
+                    "read_only": self.server.read_only,
                     "auto_reindex": settings["auto_reindex"],
                     "reindex_interval_seconds": settings["reindex_interval_seconds"],
                     "startup": {
@@ -666,8 +677,16 @@ class SearchHandler(BaseHTTPRequestHandler):
             return
         self._json(404, {"error": "not found"})
 
+    def _reject_read_only(self) -> bool:
+        if self.server.read_only:
+            self._json(403, {"error": "read_only", "detail": "Server is read-only"})
+            return True
+        return False
+
     def do_PUT(self) -> None:
         if not self._require_authorization():
+            return
+        if self._reject_read_only():
             return
         parsed = urlparse(self.path)
         fact_match = re.fullmatch(r"/facts/(\d+)", parsed.path)
@@ -745,6 +764,8 @@ class SearchHandler(BaseHTTPRequestHandler):
                 return
             self._json(200, {"schemaVersion": 1, "result": result})
             return
+        if self._reject_read_only():
+            return
         if parsed.path in {"/facts", "/extract"}:
             index = self._require_index()
             if index is None:
@@ -783,6 +804,8 @@ class SearchHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         if not self._require_authorization():
             return
+        if self._reject_read_only():
+            return
         match = re.fullmatch(r"/facts/(\d+)", urlparse(self.path).path)
         if not match:
             self._json(404, {"error": "not found"})
@@ -790,7 +813,11 @@ class SearchHandler(BaseHTTPRequestHandler):
         index = self._require_index()
         if index is None:
             return
-        result = index.delete_fact(int(match.group(1)))
+        try:
+            result = index.delete_fact(int(match.group(1)))
+        except ValueError as error:
+            self._json(400, {"error": str(error)})
+            return
         self.server.refresh_cached_stats()
         if result is None:
             self._json(404, {"error": "fact not found"})

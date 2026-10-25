@@ -19,8 +19,12 @@ class SearchSettings:
     path_weights: dict[str, float] = field(default_factory=dict)
     default_path_weight: float = 1.0
     forgetting: bool = False
-    facts_snapshot_path: str = "knowledge/rag_facts.md"
+    facts_snapshot_path: str = ".xangi-search/facts.md"
     exclude_paths: list[str] = field(default_factory=list)
+
+
+class SettingsLoadError(ValueError):
+    """Persisted settings cannot be used safely."""
 
 
 class SettingsStore:
@@ -34,6 +38,7 @@ class SettingsStore:
             dict(default_path_weights) if default_path_weights is not None else {}
         )
         self._lock = threading.RLock()
+        self.legacy_facts_snapshot_path: str | None = None
         self._settings = self._load()
 
     def _defaults(self) -> SearchSettings:
@@ -44,14 +49,28 @@ class SettingsStore:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return self._defaults()
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            return self._defaults()
+        except (OSError, ValueError) as error:
+            raise SettingsLoadError(
+                f"Cannot load settings from {self.path}: {error}. "
+                "Fix the file before starting; defaults were not applied."
+            ) from error
         if not isinstance(payload, dict):
-            return self._defaults()
+            raise SettingsLoadError(
+                f"Invalid settings in {self.path}: expected an object"
+            )
         try:
+            candidate = payload.get("facts_snapshot_path")
+            if candidate is not None:
+                normalized = validate_facts_snapshot_path(candidate, allow_legacy=True)
+                if not normalized.startswith(".xangi-search/"):
+                    self.legacy_facts_snapshot_path = normalized
+                    payload["facts_snapshot_path"] = ".xangi-search/facts.md"
             return validate_settings(payload, self.default_path_weights)
-        except ValueError:
-            return self._defaults()
+        except ValueError as error:
+            raise SettingsLoadError(
+                f"Invalid settings in {self.path}: {error}. "
+                "Fix the file before starting; defaults were not applied."
+            ) from error
 
     def get(self) -> SearchSettings:
         with self._lock:
@@ -103,9 +122,9 @@ def validate_settings(
     )
     forgetting = payload.get("forgetting", False)
     facts_snapshot_path = validate_facts_snapshot_path(
-        payload.get("facts_snapshot_path", "knowledge/rag_facts.md")
+        payload.get("facts_snapshot_path", ".xangi-search/facts.md")
     )
-    if mode not in {"hybrid", "vector", "keyword"}:
+    if not isinstance(mode, str) or mode not in {"hybrid", "vector", "keyword"}:
         raise ValueError("mode must be hybrid, vector, or keyword")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 30:
         raise ValueError("limit must be an integer between 1 and 30")
@@ -137,7 +156,7 @@ def validate_settings(
     )
 
 
-def validate_facts_snapshot_path(value: object) -> str:
+def validate_facts_snapshot_path(value: object, *, allow_legacy: bool = False) -> str:
     if not isinstance(value, str):
         raise ValueError(
             "facts_snapshot_path must be a workspace-relative Markdown path"
@@ -157,8 +176,10 @@ def validate_facts_snapshot_path(value: object) -> str:
     normalized = "/".join(parts)
     if not normalized.lower().endswith(".md"):
         raise ValueError("facts_snapshot_path must end with .md")
-    if parts[0].lower() in {".git", ".xangi-search"}:
+    if any(part.lower() == ".git" for part in parts):
         raise ValueError("facts_snapshot_path cannot use a protected directory")
+    if not allow_legacy and (parts[0] != ".xangi-search" or len(parts) < 2):
+        raise ValueError("facts_snapshot_path must be inside .xangi-search/")
     return normalized
 
 

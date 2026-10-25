@@ -236,3 +236,18 @@ def test_failed_reindex_does_not_restore_purged_content(tmp_path):
         r.file_path != "output/copy.md" for r in index.search("cat", mode="keyword")
     )
     index.close()
+
+
+@pytest.mark.parametrize("search", [grep_search, python_grep_search])
+def test_invalid_settings_block_index_and_fallback_search(tmp_path, search):
+    from xangi_search.settings import SettingsLoadError
+
+    write_files(tmp_path)
+    path = default_settings_path(tmp_path)
+    path.parent.mkdir()
+    path.write_text('{"exclude_paths": ["logs"], "limit": 0}')
+    with pytest.raises(SettingsLoadError):
+        SearchIndex(tmp_path)
+    assert not list(path.parent.glob("*.sqlite3"))
+    with pytest.raises(SettingsLoadError):
+        search("needle", tmp_path)

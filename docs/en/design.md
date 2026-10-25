@@ -73,13 +73,33 @@ Incremental indexing runs at startup and at the configured interval. Once the `S
 attached, an existing index becomes searchable while the startup refresh continues in the
 background.
 
+The default `intfloat/multilingual-e5-small` and its `base`/`large` siblings use
+`query: ` for queries and `passage: ` for documents and FACTs. Instruct variants,
+other models, and local paths retain their own prompt policy.
+
+SQLite `embedding_metadata` stores the model name, prompts, maximum input length,
+and encoding policy. When these change, or a legacy index has no metadata, stored
+chunks and active FACTs are re-embedded in batches of 64 before serving queries.
+Text, IDs, and access history are preserved. Vectors and metadata commit together
+only after success; failure rolls back and fails initialization, allowing a retry
+on the next startup. The first upgrade may therefore take longer than usual.
+Keyword-only sessions preserve metadata; returning to vector mode also fills
+missing embeddings. Replacing weights under the same model name is not detected.
+Custom embedders can opt in with a stable string `embedding_signature` attribute.
+
 ## FACTs
 
 FACTs are structured facts stored in SQLite. Each add, update, or deactivation writes a Markdown
-snapshot. The default output path is `knowledge/rag_facts.md`.
+snapshot. The default output path is `.xangi-search/facts.md`.
 
-The snapshot must be a workspace-relative `.md` path. Absolute paths, locations outside the
-workspace, `.git/`, and `.xangi-search/` are rejected.
+The snapshot must be a `.md` path under the workspace’s `.xangi-search/` directory.
+Symlinks and existing files without the generated snapshot header are rejected. Exports use
+a unique temporary file, so existing temporary files are not overwritten.
+
+`XANGI_SEARCH_READ_ONLY=true` is captured when the server is constructed. After authentication,
+PUT/DELETE and POST requests other than `POST /agent` return 403. GET, agent search, startup
+indexing and periodic indexing remain available. This is an API mutation restriction, not a
+read-only filesystem mode; search access statistics still update.
 
 ## Persistence
 
@@ -119,6 +139,8 @@ manifest. The preparation program normally runs `uv sync --frozen --extra vector
 doctor checks, and rollback after a failed update.
 
 Workspace-specific `exclude_paths` are validated by the settings store and applied during index initialization and settings updates. Directory pruning, existing candidate filtering and grep fallback share the same relative-path boundary check. Initialization and settings updates immediately remove excluded chunks and vectors while retaining source files and FACTs.
+
+The settings store treats only a missing file as an initial state. Read, JSON parsing, and validation failures propagate as SettingsLoadError, blocking index construction and fallback search. API updates persist settings only after successful validation.
 
 Environment files (`.env`, `.env.*`, `*.env`, case-insensitive at any depth) are always excluded from indexing and both grep implementations. Path weights of zero are not exclusions: candidate selection happens before weighting. Use `exclude_paths` to keep logs from consuming candidates. Logical deletion does not guarantee forensic erasure from database pages, backups or previously copied logs.
 
