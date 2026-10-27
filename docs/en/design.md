@@ -147,3 +147,5 @@ Environment files (`.env`, `.env.*`, `*.env`, case-insensitive at any depth) are
 ### Initialization group
 
 The manifest declares startup.exclusiveGroup=gpu with timeoutSeconds=120. Supporting hosts serialize model initialization for this group. Health startup.state is initializing while constructing the model/index, complete once constructed, or failed after an initialization exception. This is independent of initial reindexing and snapshot readiness. This change adds neither automatic retries nor CPU fallback. Older hosts ignore the added fields.
+
+Document decay uses only mtime: `max(0.5, min(1, 1 - age_days/30))`. Search hits do not update access history. Standalone numbers, times, and alphanumeric identifiers use boundary-aware literal matching in keyword/hybrid mode; thousands separators are interchangeable. Path weights apply after candidate retrieval and cannot recover documents absent from the candidate set.

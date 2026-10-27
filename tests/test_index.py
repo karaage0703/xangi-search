@@ -403,43 +403,46 @@ def test_facts_crud_similarity_and_snapshot(tmp_path: Path):
     index.close()
 
 
-def test_forgetting_decay_is_opt_in_and_reinforces_returned_chunks(tmp_path: Path):
-    memory = tmp_path / "memory"
-    memory.mkdir()
-    knowledge = tmp_path / "knowledge"
-    knowledge.mkdir()
-    (tmp_path / "MEMORY.md").write_text("same retained phrase", encoding="utf-8")
-    (memory / "20200101.md").write_text("same retained phrase", encoding="utf-8")
-    (knowledge / "20200101.md").write_text("same retained phrase", encoding="utf-8")
+def test_forgetting_uses_mtime_without_reinforcing_search_hits(
+    tmp_path: Path, monkeypatch
+):
+    import os
+    import time
+
+    now = time.time()
+    monkeypatch.setattr("xangi_search.index.time.time", lambda: now)
+    for name, age in [
+        ("current.md", 0),
+        ("20200101.md", 0),
+        ("old.md", 365),
+        ("week.md", 7),
+        ("future.md", -30),
+    ]:
+        path = tmp_path / name
+        path.write_text("same retained phrase", encoding="utf-8")
+        os.utime(path, (now - age * 86400, now - age * 86400))
     index = SearchIndex(tmp_path, tmp_path / "index.sqlite3")
     index.reindex()
-
-    without_decay = index.search(
-        "retained", mode="keyword", path_weights={}, forgetting=False, limit=5
+    assert index._freshness("missing.md") == 1.0
+    index.connection.execute(
+        "UPDATE chunks SET access_count=99, last_accessed='2099-01-01' WHERE file_path='old.md'"
     )
-    assert all(result.score == result.base_score for result in without_decay)
-
-    with_decay = index.search(
-        "retained", mode="keyword", path_weights={}, forgetting=True, limit=5
+    index.connection.commit()
+    before = list(
+        index.connection.execute("SELECT id, access_count, last_accessed FROM chunks")
     )
-    assert with_decay[0].file_path == "MEMORY.md"
-    dated = next(
-        result for result in with_decay if result.file_path == "memory/20200101.md"
-    )
-    assert dated.decay < 1.0
-    assert dated.access_count == 0
-    generic_directory = next(
-        result for result in with_decay if result.file_path == "knowledge/20200101.md"
-    )
-    assert generic_directory.decay < 1.0
-    reinforced = index.search(
-        "retained", mode="keyword", path_weights={}, forgetting=True, limit=5
-    )
-    assert (
-        next(
-            result for result in reinforced if result.file_path == "memory/20200101.md"
-        ).access_count
-        == 1
+    off = index.search("retained", mode="keyword", forgetting=False, limit=8)
+    assert all(r.score == r.base_score for r in off)
+    first = index.search("retained", mode="keyword", forgetting=True, limit=8)
+    rows = {r.file_path: r for r in first}
+    for name in ["current.md", "20200101.md", "future.md"]:
+        assert rows[name].score == rows[name].base_score
+    assert abs(rows["week.md"].freshness - (1 - 7 / 30)) < 1e-6
+    assert abs(rows["old.md"].score - rows["old.md"].base_score * 0.5) < 1e-6
+    second = index.search("retained", mode="keyword", forgetting=True, limit=8)
+    assert first == second
+    assert before == list(
+        index.connection.execute("SELECT id, access_count, last_accessed FROM chunks")
     )
     index.close()
 
@@ -586,3 +589,36 @@ def test_snapshot_revalidates_path_before_fact_mutation(tmp_path):
     assert index.get_fact(fact_id)["text"] == "original"
     assert index.get_fact(fact_id)["is_active"] == 1
     index.close()
+
+
+@pytest.mark.parametrize("query", ["30,958", "30958"])
+@pytest.mark.parametrize("mode", ["keyword", "hybrid"])
+def test_numeric_search_matches_whole_number_with_optional_grouping(
+    tmp_path, query, mode
+):
+    for name, content in {
+        "grouped.md": "フォロワー30,958人です",
+        "plain.md": "フォロワー30958人です",
+        "noise.md": "30 と958、ID3095891982、数値130958",
+    }.items():
+        (tmp_path / name).write_text(content)
+    index = SearchIndex(tmp_path, tmp_path / "index.sqlite3")
+    index.reindex()
+    rows = index.search(query, mode=mode, limit=8)
+    assert {r.file_path for r in rows} == {"grouped.md", "plain.md"}
+    index.close()
+
+
+@pytest.mark.parametrize("query", ["00:48:48", "v0.2.3", "62a12595"])
+def test_structured_search_does_not_split_identifiers(tmp_path, query):
+    (tmp_path / "exact.md").write_text(f"対象 {query} です")
+    (tmp_path / "noise.md").write_text(f"ID x{query}9 と 00 48 0.2.3")
+    index = SearchIndex(tmp_path, tmp_path / "index.sqlite3")
+    index.reindex()
+    assert [r.file_path for r in index.search(query, mode="keyword")] == ["exact.md"]
+    index.close()
+
+
+def test_numeric_query_keeps_leading_zeroes():
+    assert "1,234" not in SearchIndex._literal_query("001234")
+    assert "001,234" in SearchIndex._literal_query("001234")

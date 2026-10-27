@@ -16,7 +16,9 @@ This repository is a local xangi extension. Run setup from the repository root.
 
 The search index, optional embeddings, and search/automatic-index settings are extension-owned state under the workspace's `.xangi-search/`. The parent xangi keeps the child port and bearer token only at runtime. Multiple instances with different workspaces are isolated; do not configure multiple instances to update the same workspace concurrently. Do not delete an existing index during setup. Incremental indexing runs at startup and every 30 minutes by default; do not add a duplicate xangi schedule or OS cron job. If a command fails, report the exact command and error before changing configuration.
 
-## Offer pre-search before the LLM runs
+## Optional: pre-search before the LLM runs (Preflight)
+
+Preflight is optional, not a recommended or required setup step. Skip configuration in this section unless requested. Do not silently disable an existing hook during updates. It adds search latency and context on every turn, so let users choose it for their needs.
 
 When xangi supports the `UserPromptSubmit` hook and `extension_request --query-json-stdin`, it can search once before sending the user input to the LLM and append an evidence pack capped at 12,000 characters. This uses xangi's generic command-hook mechanism; it does not add xangi-search-specific behavior to xangi core.
 
@@ -46,8 +48,8 @@ The hook receives only the current unexpanded user input as JSON on stdin and ca
 
 Before changing configuration, disclose that the command runs persistently on every turn, the exact executable, the data passed to it, the 10-second timeout, and the 14,000-character output limit. Offer these choices:
 
-- Recommended: add the pre-search hook
-- Use only the extension and skill; do not add the hook
+- Use the extension and skill with search on demand (standard for new installations; no hook)
+- Add the pre-search hook only if requested
 
 Do not modify `hooks/hooks.json` until the user selects an option. If the same `id` already exists, do not add a duplicate. Show the diff and ask again if its executable or limits differ. When stopping or removing the extension, ask whether to disable or remove this hook too.
 

@@ -147,3 +147,13 @@ search settings. The settings file is updated on the next settings save; the sna
 on the next FACT mutation. Existing SQLite FACTs are retained. If the database is empty, the old
 default snapshot or old configured snapshot is imported. Old files are not modified or deleted.
 Include `.xangi-search/facts.md` and the SQLite database in your backups.
+
+## Checking retrieval quality
+
+With decay enabled, fresh files receive a multiplier of 1; files at least 15 days old receive the floor of 0.5. Missing mtime is neutral. Search hits no longer reinforce documents. Standalone values such as `30,958`, `30958`, and `00:48:48` can be searched literally.
+
+Before tuning, fix queries and expected source documents for current facts, historical decisions, books, and numbers. Compare actual API retrieval through final ranking; reranking a fixed candidate pool is only supplementary. If a source is absent, inspect indexing and missing field names. Summaries should retain metric names, units, and observation dates. Store raw evaluation JSON outside the indexed workspace to prevent search-result copies from becoming sources.
+
+## Optional pre-search (Preflight)
+
+Use the extension and skill to search on demand by default. Preflight optionally searches before each LLM turn and adds evidence candidates. It is neither recommended nor required; configure it in the workspace’s `hooks/hooks.json` only when requested. It adds latency and context on every turn and may provide little benefit for short acknowledgements. Updates do not automatically enable or disable existing hooks. See the [optional setup instructions](../../XANGI_SETUP.en.md#optional-pre-search-before-the-llm-runs-preflight).
