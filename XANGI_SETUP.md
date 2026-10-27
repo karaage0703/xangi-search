@@ -16,7 +16,9 @@
 
 検索index、任意のembedding、検索・自動index設定はworkspaceの`.xangi-search/`に保存するextension所有stateです。子processのportと認証tokenは親xangiが実行時だけ保持します。workspaceが異なる複数xangi instanceは互いに分離されます。同じworkspaceを複数instanceから同時更新する設定は行いません。既存indexはセットアップ時に削除しません。起動時と標準30分間隔で差分indexを行います。xangi scheduleやOSのcronへindex処理を重複登録しません。コマンドが失敗した場合は、設定を変更する前に実行したコマンドとエラーをそのまま報告します。
 
-## 回答前の事前検索を提案する
+## オプション: 回答前の事前検索（Preflight）
+
+Preflightは任意機能で、推奨・必須のセットアップ項目ではありません。希望がなければ追加せず、この節の設定作業を省略します。既に有効なhookは更新時に勝手に無効化しません。毎turnの検索待ち時間と追加contextが増えるため、利用者の用途に合わせて選びます。
 
 xangiが`UserPromptSubmit` hookと`extension_request --query-json-stdin`に対応している場合、ユーザー入力をLLMへ渡す前にxangi-searchで1回だけ検索し、12,000文字以内の根拠候補を追加できます。これはxangiの汎用command hookを使う設定であり、xangi-search専用の処理をxangi本体へ追加しません。
 
@@ -46,8 +48,8 @@ xangiが`UserPromptSubmit` hookと`extension_request --query-json-stdin`に対�
 
 設定前に、永続的に毎turn実行されること、実行file、渡すデータ、10秒timeout、14,000文字の出力上限を明示し、次の選択肢を示します。
 
-- 推奨: 事前検索hookを追加
-- extensionとスキルだけ利用し、hookは追加しない
+- extensionとスキルだけ利用し、必要な時に検索する（新規導入時の標準。hookは追加しない）
+- 希望する場合だけ、事前検索hookを追加する
 
 選択されるまで`hooks/hooks.json`を変更しません。同じ`id`が既にある場合は重複追加せず、実行fileや上限が異なれば差分を示して再確認します。extensionを停止・削除する場合は、このhookも無効化または削除するか確認します。
 

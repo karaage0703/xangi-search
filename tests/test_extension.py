@@ -159,7 +159,12 @@ def test_setup_contract_includes_managed_runtime_and_usage_skill():
     assert "uv sync --extra vector" in setup
     assert "XANGI_SEARCH_NO_VECTOR=true" in setup
     assert "fact利用を確認する" in setup
-    assert "回答前の事前検索を提案する" in setup
+    assert "オプション: 回答前の事前検索（Preflight）" in setup
+    assert "希望がなければ追加せず" in setup
+    assert "推奨: 事前検索hookを追加" not in setup
+    setup_en = (root / "XANGI_SETUP.en.md").read_text(encoding="utf-8")
+    assert "Skip configuration in this section unless requested" in setup_en
+    assert "Recommended: add the pre-search hook" not in setup_en
     assert "xangi-search-preflight-hook" in setup
     assert "--query-json-stdin" in setup
     assert '"id": "xangi-search-preflight"' in setup

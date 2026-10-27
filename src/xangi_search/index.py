@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import heapq
 import json
-import math
 import os
 import re
 import sqlite3
@@ -14,7 +13,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from datetime import datetime
 from fnmatch import fnmatchcase
 from pathlib import Path
 
@@ -116,10 +115,8 @@ DEFAULT_EXCLUDE_NAMES = {
     "thumbs.db",
     "yarn.lock",
 }
-BASE_HALF_LIFE = 30
-STRENGTH_PER_ACCESS = 0.5
-NO_DECAY_FILES = {"MEMORY.md", "AGENTS.md", "CLAUDE.md"}
-DATE_PATTERN = re.compile(r"(\d{4})[-_]?(\d{2})[-_]?(\d{2})")
+FRESHNESS_DECAY_DAYS = 30
+FRESHNESS_FLOOR = 0.5
 QUERY_EMBEDDING_CACHE_SIZE = 128
 QUERY_ENCODE_WAIT_SECONDS = 2.0
 DEFAULT_FACTS_SNAPSHOT_PATH = ".xangi-search/facts.md"
@@ -757,8 +754,37 @@ class SearchIndex:
             self._vector_search_lock.release()
 
     @staticmethod
+    def _literal_query(query: str) -> tuple[str, ...]:
+        text = query.strip()
+        if re.fullmatch(r"(?:[0-9]{3,}|[0-9]{1,3}(?:,[0-9]{3})+)", text):
+            plain = text.replace(",", "")
+            grouped = re.sub(r"(?<=\d)(?=(?:\d{3})+$)", ",", plain)
+            return tuple(dict.fromkeys((text, plain, grouped)))
+        if re.fullmatch(r"[0-9]{2}:[0-9]{2}(?::[0-9]{2})?", text) or (
+            len(text) >= 3
+            and re.fullmatch(r"[A-Za-z0-9_.-]+", text)
+            and re.search(r"[0-9]", text)
+            and re.search(r"[A-Za-z]", text)
+        ):
+            return (text,)
+        return ()
+
+    @staticmethod
+    def _matches_literal(text: str, variants: tuple[str, ...]) -> bool:
+        return any(
+            re.search(
+                r"(?<![A-Za-z0-9_.,:-])" + re.escape(v) + r"(?![A-Za-z0-9_.,:-])",
+                text,
+                re.IGNORECASE,
+            )
+            for v in variants
+        )
+
+    @staticmethod
     def _fts_query(query: str) -> str:
-        tokens = re.findall(r"[\w.-]+", query, flags=re.UNICODE)
+        tokens = SearchIndex._literal_query(query) or re.findall(
+            r"[\w.-]+", query, flags=re.UNICODE
+        )
         return " OR ".join(
             f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens[:12]
         )
@@ -805,7 +831,8 @@ class SearchIndex:
             "WHERE chunks_fts MATCH ? ORDER BY rank LIMIT ?",
             (expression, max(limit * 50, 200)),
         ).fetchall()
-        if not rows and retry_on_empty:
+        literals = self._literal_query(query)
+        if not rows and retry_on_empty and not literals:
             fallback = self._fts_fallback_query(query)
             if fallback and fallback != expression:
                 rows = connection.execute(
@@ -814,6 +841,19 @@ class SearchIndex:
                     "ORDER BY rank LIMIT ?",
                     (fallback, max(limit * 50, 200)),
                 ).fetchall()
+        if literals and rows:
+            ids = [int(row["rowid"]) for row in rows]
+            placeholders = ",".join("?" for _ in ids)
+            matches = {
+                int(row["id"])
+                for row in connection.execute(
+                    f"SELECT id, content, file_path FROM chunks WHERE id IN ({placeholders})",
+                    ids,
+                )
+                if self._matches_literal(row["content"], literals)
+                or self._matches_literal(row["file_path"], literals)
+            }
+            rows = [row for row in rows if int(row["rowid"]) in matches]
         if not rows:
             return {}
         raw = {int(row["rowid"]): max(0.0, -float(row["rank"])) for row in rows}
@@ -857,46 +897,9 @@ class SearchIndex:
             days_old = (
                 time.time() - (self.workspace / file_path).stat().st_mtime
             ) / 86400
-            return max(0.5, 1.0 - days_old / 365)
+            return max(FRESHNESS_FLOOR, min(1.0, 1.0 - days_old / FRESHNESS_DECAY_DAYS))
         except OSError:
-            return 0.7
-
-    @staticmethod
-    def _memory_decay(
-        file_path: str, access_count: int = 0, last_accessed: str | None = None
-    ) -> float:
-        path = Path(file_path)
-        if path.name in NO_DECAY_FILES:
             return 1.0
-        elapsed: int | None = None
-        if last_accessed:
-            try:
-                elapsed = (
-                    datetime.now().astimezone().date()
-                    - date.fromisoformat(last_accessed[:10])
-                ).days
-            except (TypeError, ValueError):
-                pass
-        if elapsed is None:
-            match = DATE_PATTERN.search(file_path)
-            if match:
-                try:
-                    elapsed = (
-                        datetime.now().astimezone().date()
-                        - date(
-                            int(match.group(1)),
-                            int(match.group(2)),
-                            int(match.group(3)),
-                        )
-                    ).days
-                except ValueError:
-                    pass
-        if elapsed is None:
-            return 0.5
-        if elapsed < 0:
-            return 1.0
-        strength = BASE_HALF_LIFE * (1 + access_count * STRENGTH_PER_ACCESS)
-        return math.exp(-math.log(2) * elapsed / strength)
 
     def search(
         self,
@@ -915,6 +918,7 @@ class SearchIndex:
         if mode not in {"hybrid", "vector", "keyword"}:
             raise ValueError("mode must be hybrid, vector, or keyword")
         weights = path_weights if path_weights is not None else {}
+        literals = self._literal_query(query) if mode != "vector" else ()
         with self._read_connection() as connection:
             started = time.perf_counter()
             keyword = (
@@ -970,6 +974,15 @@ class SearchIndex:
                     )
                 base_score = score
                 row = rows_by_id.get(chunk_id)
+                if (
+                    literals
+                    and row is not None
+                    and not (
+                        self._matches_literal(row["content"], literals)
+                        or self._matches_literal(row["file_path"], literals)
+                    )
+                ):
+                    continue
                 if row is not None and path_is_excluded(
                     row["file_path"], self.exclude_paths
                 ):
@@ -985,13 +998,7 @@ class SearchIndex:
                     else 1.0
                 )
                 access_count = int(row["access_count"] or 0) if row is not None else 0
-                decay = (
-                    self._memory_decay(
-                        row["file_path"], access_count, row["last_accessed"]
-                    )
-                    if forgetting and row is not None
-                    else 1.0
-                )
+                decay = 1.0  # Compatibility field; mtime freshness is the only decay.
                 score *= path_weight * freshness * decay
                 if score >= min_score:
                     scored.append(
@@ -1008,7 +1015,6 @@ class SearchIndex:
             scored.sort(key=lambda item: item[1], reverse=True)
             results: list[SearchResult] = []
             seen_files: set[str] = set()
-            returned_ids: list[int] = []
             for (
                 chunk_id,
                 score,
@@ -1022,7 +1028,6 @@ class SearchIndex:
                 if row is None or row["file_path"] in seen_files:
                     continue
                 seen_files.add(row["file_path"])
-                returned_ids.append(chunk_id)
                 results.append(
                     SearchResult(
                         file_path=row["file_path"],
@@ -1041,14 +1046,6 @@ class SearchIndex:
                 )
                 if len(results) >= limit:
                     break
-            if forgetting and returned_ids:
-                today = datetime.now().astimezone().date().isoformat()
-                with self._write_lock:
-                    self.connection.executemany(
-                        "UPDATE chunks SET access_count = access_count + 1, last_accessed = ? WHERE id = ?",
-                        [(today, chunk_id) for chunk_id in returned_ids],
-                    )
-                    self.connection.commit()
             if timings is not None:
                 finished = time.perf_counter()
                 timings.update(

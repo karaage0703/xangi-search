@@ -143,3 +143,5 @@ workspace固有の`exclude_paths`は設定storeで検証し、index初期化・�
 ### 初期化グループ
 
 manifestはstartup.exclusiveGroup=gpu、timeoutSeconds=120を宣言する。対応ホストは同じグループのモデル初期化を重ねない。healthのstartup.stateはモデルと索引の構築中initializing、構築完了complete、例外で終了failed。初期の再indexや利用可能なsnapshotとは別の状態で、ready=falseでも初期化完了を表せる。初期化の再試行やCPU切替は本変更に含まない。旧ホストは追加フィールドを無視する。
+
+文書の時間減衰はmtimeだけで計算し、係数は `max(0.5, min(1, 1 - 経過日数/30))` です。検索取得による参照履歴更新は行いません。単独の数値・時刻・英数字識別子はkeyword/hybridで分割せず、境界まで一致する候補を使います。数値の桁区切りは同一視します。ディレクトリ重みは候補抽出後に掛かるため、候補に入らない資料は重みだけでは復活しません。
