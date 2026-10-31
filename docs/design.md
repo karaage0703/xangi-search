@@ -58,7 +58,7 @@ workerが触れません。
 indexの正本はSQLiteです。標準のHybrid検索は、埋め込みによる意味検索とSQLite FTS5の
 キーワード検索を統合します。Hybridのbase scoreはkeyword scoreを下限として、vector候補から
 漏れた完全一致が意味検索だけの候補より下がらないようにします。vector依存がない場合は
-Keyword検索へ縮退します。
+HybridはKeyword検索へ縮退します。明示的なVector指定でencoderが利用不能ならエラーを返し、成功・0件として扱いません。
 
 固定幅chunkの末尾がoverlap以下なら、その内容は直前chunkにすでに含まれるため独立chunkを
 作りません。依存物、build生成物、runtime stateなどのdirectory除外規則はglob patternとして
@@ -68,6 +68,8 @@ Keyword検索へ縮退します。
 検索結果が不足する場合は、範囲を制限したgrep fallbackを追加します。ディレクトリ重み、
 最低関連度、任意の時間減衰を最終scoreへ反映します。埋め込み行列はmemoryへcacheし、queryごとに
 SQLiteから全vectorを読み直しません。
+
+検索中のSQLite読取transactionを固定し、DBのcommitとvector cacheの公開を同じlockで保護します。背景更新の途中でもスコアと本文を同じ世代から取得します。更新用embeddingの生成中は既存snapshotを検索できます。encoder競合時のHybridはキーワード再検索も有効にします。grepはrgの有無によらず文字列一致で検索し、補助結果をUI・検索agent・Preflightへ渡します。
 
 起動時と設定された間隔で差分indexを行います。`SearchIndex`がattachされた時点で既存indexは
 検索可能になり、起動時の更新はバックグラウンドで進めます。
@@ -93,6 +95,10 @@ FACTはSQLiteを基準に保存する構造化された事実です。追加、�
 出力先はワークスペース内の`.xangi-search/`配下の`.md`に限定します。シンボリックリンクを含む
 出力先と、生成ファイルのヘッダーがない既存ファイルへの書き込みは拒否します。書き出しには
 固有の一時ファイルを使い、既存の一時ファイルを上書きしません。
+
+書込み失敗時はDB変更をrollbackし、後続操作へ持ち越しません。FACTのsnapshotは未確定の変更から生成し、出力成功後にDBと検索cacheを公開します。設定変更でもsnapshotの出力に成功してから設定を保存します。DBとファイルをまたぐ電源断・process強制終了に対する単一transactionは保証しません。
+
+snapshot形式2は各FACTを1行のJSON recordとしてMarkdownに保存し、本文中の見出し・管理情報風の行・改行を保持します。旧形式の読込みは継続しますが、形式2の復元には対応版が必要です。空DBの復旧では設定された出力先を優先し、存在する空snapshotから旧ファイルへfallbackしません。encoderなしで本文を編集したら旧vectorを無効化し、encoder復帰時や再有効化時に不足分を生成します。
 
 `XANGI_SEARCH_READ_ONLY=true`はサーバー生成時に固定します。認証後、PUT/DELETEと
 `POST /agent`以外のPOSTを403で拒否します。GET、検索エージェント、起動時・定期索引更新は

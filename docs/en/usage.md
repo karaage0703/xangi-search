@@ -76,7 +76,7 @@ uv run xangi-search --workspace /path/to/workspace serve
 ```
 
 For a lightweight setup without vector dependencies, use `uv sync` and add `--no-vector` to each
-command. Search then runs in keyword mode.
+command. Hybrid then uses keyword search; an explicit `--mode vector` returns an unavailable error. `search --limit` and `evaluate --k` require positive integers.
 
 ## Troubleshooting
 
@@ -144,8 +144,8 @@ Snapshots must be Markdown files under `.xangi-search/`; the default is `.xangi-
 Existing files without the generated header and symlinks are never overwritten.
 An old setting outside this directory is mapped to the new default at startup, preserving other
 search settings. The settings file is updated on the next settings save; the snapshot is written
-on the next FACT mutation. Existing SQLite FACTs are retained. If the database is empty, the old
-default snapshot or old configured snapshot is imported. Old files are not modified or deleted.
+on the next FACT mutation. Existing SQLite FACTs are retained. If the database is empty, the
+configured snapshot is imported first (the old configured location takes priority during migration). An existing empty current snapshot never resurrects older FACTs. New exports use format 2 with JSON records to preserve arbitrary text. Legacy snapshots remain readable; restoring format 2 requires a compatible version. Old files are not modified or deleted.
 Include `.xangi-search/facts.md` and the SQLite database in your backups.
 
 ## Checking retrieval quality
@@ -157,3 +157,7 @@ Before tuning, fix queries and expected source documents for current facts, hist
 ## Optional pre-search (Preflight)
 
 Use the extension and skill to search on demand by default. Preflight optionally searches before each LLM turn and adds evidence candidates. It is neither recommended nor required; configure it in the workspace’s `hooks/hooks.json` only when requested. It adds latency and context on every turn and may provide little benefit for short acknowledgements. Updates do not automatically enable or disable existing hooks. See the [optional setup instructions](../../XANGI_SETUP.en.md#optional-pre-search-before-the-llm-runs-preflight).
+
+Literal value matching accepts adjacent punctuation and labels while rejecting substrings of decimals, longer IDs and longer timestamps. Exact filtering precedes the candidate cap. Supplemental grep uses literal matching and is included in the UI, search agent and Preflight.
+
+Preflight limits the pack to 12,000 characters and the complete serialized output to 14,000 characters, including JSON escapes, the explanatory wrapper and newline.

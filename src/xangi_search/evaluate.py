@@ -46,6 +46,8 @@ def percentile(values: list[float], percentage: float) -> float:
 def evaluate(
     index: SearchIndex, queries: list[EvaluationQuery], *, mode: str, k: int
 ) -> dict[str, object]:
+    if k < 1:
+        raise ValueError("k must be positive")
     recalls: list[float] = []
     reciprocal_ranks: list[float] = []
     latencies: list[float] = []

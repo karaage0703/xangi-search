@@ -415,20 +415,27 @@
       function renderResults(payload) {
         const container = $('results');
         container.replaceChildren();
-        $('empty').hidden = payload.count > 0;
-        $('summary').textContent = `${payload.count}ファイル · ${payload.elapsed_ms}ms`;
-        for (const item of payload.results) {
+        const results = [...(payload.results || [])];
+        const seen = new Set(results.map(item => item.file_path));
+        for (const item of payload.grep_results || []) {
+          if (seen.has(item.file_path)) continue;
+          seen.add(item.file_path);
+          results.push({ ...item, content: item.context, source: 'grep' });
+        }
+        $('empty').hidden = results.length > 0;
+        $('summary').textContent = `${results.length}ファイル · ${payload.elapsed_ms}ms`;
+        for (const item of results) {
           const article = document.createElement('article'); article.className = 'result';
           const link = document.createElement('a'); link.className = 'result-link';
           link.href = resultLink(item.file_path); link.textContent = item.file_path;
           if (!proxyMatch) { link.target = '_blank'; link.rel = 'noopener'; }
           const score = document.createElement('p'); score.className = 'result-score';
-          score.textContent = `関連度 ${Number(item.score).toFixed(2)}`;
+          score.textContent = item.source === 'grep' ? '文字列一致' : `関連度 ${Number(item.score).toFixed(2)}`;
           const snippet = document.createElement('p'); snippet.className = 'result-snippet';
           snippet.textContent = item.content;
           article.append(link, score, snippet); container.append(article);
         }
-        if (payload.count === 0) {
+        if (results.length === 0) {
           $('empty').querySelector('h2').textContent = '該当するファイルがありません';
           $('empty').querySelector('p').textContent = '短いキーワードにするか、最低関連度を下げてください。';
         }

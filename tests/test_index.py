@@ -524,7 +524,7 @@ def test_unchanged_reindex_keeps_the_existing_vector_cache(tmp_path: Path, monke
 def test_vector_search_limits_candidates_before_loading_rows(
     tmp_path: Path, monkeypatch
 ):
-    index = SearchIndex(tmp_path, tmp_path / "index.sqlite3")
+    index = SearchIndex(tmp_path, tmp_path / "index.sqlite3", FakeEmbedder())
     index.connection.executemany(
         "INSERT INTO chunks(id, file_path, chunk_index, content) VALUES (?, ?, 0, ?)",
         [(chunk_id, f"file-{chunk_id}.md", "content") for chunk_id in range(1, 1201)],

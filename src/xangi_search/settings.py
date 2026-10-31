@@ -4,6 +4,7 @@ import json
 import math
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Mapping
@@ -76,7 +77,12 @@ class SettingsStore:
         with self._lock:
             return self._settings
 
-    def update(self, payload: dict[str, object]) -> SearchSettings:
+    def update(
+        self,
+        payload: dict[str, object],
+        *,
+        prepare: Callable[[SearchSettings], None] | None = None,
+    ) -> SearchSettings:
         with self._lock:
             current = asdict(self._settings)
             unknown = set(payload) - set(current) - {"schema_version"}
@@ -86,6 +92,8 @@ class SettingsStore:
                 {key: value for key, value in payload.items() if key in current}
             )
             settings = validate_settings(current)
+            if prepare is not None:
+                prepare(settings)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             target = self.path
             temporary = target.with_suffix(f"{target.suffix}.tmp")
