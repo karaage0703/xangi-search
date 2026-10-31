@@ -26,6 +26,7 @@ COMMAND = [
     "--query-json-stdin",
 ]
 SEARCH_TIMEOUT_SECONDS = 8.0
+HOOK_MAX_OUTPUT_CHARS = 14_000
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -94,11 +95,28 @@ def run_hook(
     if not preflight_results(response):
         return None
     pack = format_preflight_pack(response)
-    return {
-        "hookSpecificOutput": {
-            "additionalContext": build_additional_context(pack),
+
+    def output_for(value: str) -> dict[str, object]:
+        return {
+            "hookSpecificOutput": {"additionalContext": build_additional_context(value)}
         }
-    }
+
+    output = output_for(pack)
+    # Budget the exact JSON sent to the host, including escapes and wrapper.
+    low, high = 0, len(pack)
+    while low < high:
+        middle = (low + high + 1) // 2
+        candidate = output_for(pack[:middle])
+        if (
+            len(json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))) + 1
+            <= HOOK_MAX_OUTPUT_CHARS
+        ):
+            low = middle
+        else:
+            high = middle - 1
+    if low != len(pack):
+        output = output_for(pack[:low])
+    return output
 
 
 def main() -> None:

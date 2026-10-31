@@ -58,7 +58,7 @@ when shutdown races with attachment or an active refresh.
 SQLite is the source of truth for the index. The default Hybrid mode combines embedding-based
 semantic search with SQLite FTS5 keyword search. The Hybrid base score uses the keyword score as a
 floor so that an exact match omitted from the vector candidates cannot rank below a semantic-only
-candidate. When vector dependencies are unavailable, the service falls back to Keyword mode.
+candidate. When vector dependencies are unavailable, Hybrid falls back to Keyword mode. An explicit Vector request without an available encoder returns an error rather than a successful empty result.
 
 If the final fixed-width chunk is no longer than the overlap, its content is already present in the
 previous chunk and no redundant chunk is created. Directory exclusions for dependencies, build
@@ -68,6 +68,8 @@ and grep fallbacks. Root-only patterns remain separate instead of being hard-cod
 A bounded grep fallback supplements searches with too few results. Directory weights, a minimum
 score, and optional time decay are applied to the final ranking. The embedding matrix is cached in
 memory instead of being read from SQLite for every query.
+
+Search pins a SQLite read transaction and coordinates DB commits with vector-cache publication under the same lock. Scores and content come from one generation while background encoding leaves the existing snapshot searchable. Hybrid enables keyword retries when the query encoder is busy. Both grep implementations use literal matching, and the UI, search agent and Preflight consume supplemental grep hits.
 
 Incremental indexing runs at startup and at the configured interval. Once the `SearchIndex` is
 attached, an existing index becomes searchable while the startup refresh continues in the
@@ -95,6 +97,10 @@ snapshot. The default output path is `.xangi-search/facts.md`.
 The snapshot must be a `.md` path under the workspace’s `.xangi-search/` directory.
 Symlinks and existing files without the generated snapshot header are rejected. Exports use
 a unique temporary file, so existing temporary files are not overwritten.
+
+Failed writes roll back DB changes instead of leaving them for a later operation to commit. FACT snapshots are generated from pending changes before the DB and search cache are published. Settings are persisted only after a required snapshot export succeeds. This does not provide a single transaction across DB and files for power loss or forced process termination.
+
+Snapshot format 2 stores each FACT as a single-line JSON record in Markdown, preserving headings, metadata-like text and newlines. Legacy snapshots remain readable; restoring format 2 requires a compatible version. Empty-DB recovery prefers the configured snapshot, and an existing empty snapshot does not fall back to older files. Editing without an encoder invalidates stale vectors; missing vectors are generated when the encoder returns or a FACT is reactivated.
 
 `XANGI_SEARCH_READ_ONLY=true` is captured when the server is constructed. After authentication,
 PUT/DELETE and POST requests other than `POST /agent` return 403. GET, agent search, startup

@@ -509,6 +509,8 @@ class SearchHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError as error:
             raise ValueError("invalid Content-Length") from error
+        if length < 0:
+            raise ValueError("Content-Length must not be negative")
         if length > 64 * 1024:
             raise ValueError("request body is too large")
         try:
@@ -602,7 +604,11 @@ class SearchHandler(BaseHTTPRequestHandler):
             index = self._require_index()
             if index is None:
                 return
-            fact = index.get_fact(int(fact_match.group(1)))
+            try:
+                fact = index.get_fact(int(fact_match.group(1)))
+            except (ValueError, OverflowError) as error:
+                self._json(400, {"error": str(error)})
+                return
             if fact is None:
                 self._json(404, {"error": "fact not found"})
                 return
@@ -617,7 +623,11 @@ class SearchHandler(BaseHTTPRequestHandler):
             if not query:
                 self._json(400, {"error": "q is required"})
                 return
-            limit = max(1, min(30, int((params.get("k") or ["3"])[0])))
+            try:
+                limit = max(1, min(30, int((params.get("k") or ["3"])[0])))
+            except ValueError as error:
+                self._json(400, {"error": str(error)})
+                return
             started = time.perf_counter()
             results = index.find_similar_facts(query, limit)
             self._json(
@@ -696,8 +706,11 @@ class SearchHandler(BaseHTTPRequestHandler):
                 return
             try:
                 result = index.update_fact(int(fact_match.group(1)), self._json_body())
-            except ValueError as error:
+            except (ValueError, OverflowError) as error:
                 self._json(400, {"error": str(error)})
+                return
+            except OSError as error:
+                self._json(500, {"error": f"could not write facts snapshot: {error}"})
                 return
             if result is None:
                 self._json(404, {"error": "fact not found"})
@@ -716,9 +729,21 @@ class SearchHandler(BaseHTTPRequestHandler):
             if "facts_snapshot_path" in body:
                 candidate = validate_facts_snapshot_path(body["facts_snapshot_path"])
                 index.validate_facts_snapshot_location(candidate)
-            settings = self.server.settings.update(body)
-            index.configure_facts_snapshot(settings.facts_snapshot_path)
-            index.configure_exclude_paths(settings.exclude_paths)
+            # Validate and export before persisting settings. Serialize this
+            # with FACT writes so no mutation observes a tentative target.
+            with index._write_lock:
+                previous_path = index.facts_snapshot_path
+                try:
+                    settings = self.server.settings.update(
+                        body,
+                        prepare=lambda candidate: index.configure_facts_snapshot(
+                            candidate.facts_snapshot_path
+                        ),
+                    )
+                except BaseException:
+                    index._facts_snapshot_path = previous_path
+                    raise
+                index.configure_exclude_paths(settings.exclude_paths)
             self.server.refresh_cached_stats()
         except ValueError as error:
             self._json(400, {"error": str(error)})
@@ -782,6 +807,9 @@ class SearchHandler(BaseHTTPRequestHandler):
             except ValueError as error:
                 self._json(400, {"error": str(error)})
                 return
+            except OSError as error:
+                self._json(500, {"error": f"could not write facts snapshot: {error}"})
+                return
             self._json(
                 200,
                 {
@@ -815,8 +843,11 @@ class SearchHandler(BaseHTTPRequestHandler):
             return
         try:
             result = index.delete_fact(int(match.group(1)))
-        except ValueError as error:
+        except (ValueError, OverflowError) as error:
             self._json(400, {"error": str(error)})
+            return
+        except OSError as error:
+            self._json(500, {"error": f"could not write facts snapshot: {error}"})
             return
         self.server.refresh_cached_stats()
         if result is None:
@@ -922,7 +953,7 @@ def format_agent_results(
     workspace_url: str | None = None,
 ) -> str:
     unique: dict[str, dict[str, object]] = {}
-    for raw in payload.get("results", []):
+    for raw in [*payload.get("results", []), *payload.get("grep_results", [])]:
         if not isinstance(raw, dict):
             continue
         file_path = raw.get("file_path")
@@ -937,7 +968,7 @@ def format_agent_results(
     for index, (file_path, result) in enumerate(entries):
         score = result.get("score")
         score_text = f" — 関連度 {score:.2f}" if isinstance(score, (int, float)) else ""
-        content = result.get("content")
+        content = result.get("content", result.get("context"))
         preview = _agent_excerpt(content)
         web_urls = extract_web_urls(content) if isinstance(content, str) else []
         lines.append(
@@ -966,6 +997,7 @@ def grep_search(
         )
     command = [
         "rg",
+        "-F",
         "-i",
         "-l",
         "--max-count",
@@ -1038,6 +1070,7 @@ def grep_search(
             context = subprocess.run(
                 [
                     "rg",
+                    "-F",
                     "-i",
                     "-n",
                     "-C",

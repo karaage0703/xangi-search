@@ -23,7 +23,17 @@ def preflight_query_parameters(query: str, mode: str = "hybrid") -> dict[str, ob
 def preflight_results(payload: dict[str, object]) -> list[dict[str, object]]:
     raw_results = payload.get("results", [])
     if not isinstance(raw_results, list):
-        return []
+        raw_results = []
+    grep = payload.get("grep_results", [])
+    if isinstance(grep, list):
+        raw_results = [
+            *raw_results,
+            *[
+                {**item, "content": item.get("context", ""), "source": "grep"}
+                for item in grep
+                if isinstance(item, dict)
+            ],
+        ]
     unique: list[dict[str, object]] = []
     seen: set[str] = set()
     for item in raw_results:

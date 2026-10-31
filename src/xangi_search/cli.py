@@ -24,6 +24,13 @@ def load_embedder(disabled: bool):
         return None
 
 
+def positive_int(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return number
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="xangi-search")
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
@@ -36,13 +43,13 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument(
         "--mode", choices=["hybrid", "vector", "keyword"], default="hybrid"
     )
-    search.add_argument("--limit", type=int, default=8)
+    search.add_argument("--limit", type=positive_int, default=8)
     evaluation = subparsers.add_parser("evaluate")
     evaluation.add_argument("--queries", type=Path, required=True)
     evaluation.add_argument(
         "--mode", choices=["hybrid", "vector", "keyword"], default="hybrid"
     )
-    evaluation.add_argument("--k", type=int, default=5)
+    evaluation.add_argument("--k", type=positive_int, default=5)
     serve_parser = subparsers.add_parser("serve")
     serve_parser.add_argument("--host", default="127.0.0.1")
     serve_parser.add_argument("--port", type=int, default=7891)
@@ -52,6 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     embedder = load_embedder(args.no_vector)
+    if getattr(args, "mode", None) == "vector" and embedder is None:
+        raise SystemExit("vector search is unavailable; use keyword or hybrid mode")
     index = SearchIndex(args.workspace, args.db, embedder)
     if args.command == "index":
         print(json.dumps(index.reindex(), ensure_ascii=False))
