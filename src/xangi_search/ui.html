@@ -1,6 +1,22 @@
 <!doctype html>
 <html lang="ja">
   <head>
+<script>
+// Same-origin xangi appearance preference; no writes during initialization.
+(() => {
+  const media = matchMedia('(prefers-color-scheme: dark)');
+  const preference = () => { try { return localStorage.getItem('xangi-theme'); } catch { return null; } };
+  const apply = () => {
+    const selected = preference();
+    const dark = selected === 'dark' || (selected !== 'light' && media.matches);
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+  };
+  apply();
+  media.addEventListener('change', apply);
+  window.addEventListener('storage', event => { if (event.key === 'xangi-theme' || event.key === null) apply(); });
+})();
+</script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>xangi-search</title>
@@ -9,6 +25,17 @@
        * genre: modern-minimal · theme: existing xangi · mobile: 320/375/414/768
        */
       :root {
+  /* xangi filer typography: UI, secondary, counts, headings, reading, code. */
+  --xangi-font-ui: 13px;
+  --xangi-font-caption: 12px;
+  --xangi-font-micro: 11px;
+  --xangi-font-heading: 18px;
+  --xangi-font-section: 16px;
+  --xangi-font-reading: 16px;
+  --xangi-font-code: 13px;
+  --xangi-font-metric: 24px;
+  --xangi-font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif;
+
         color-scheme: light dark;
         --surface: #fff;
         --surface-muted: #f7f6f3;
@@ -34,7 +61,7 @@
       }
 
       @media (prefers-color-scheme: dark) {
-        :root {
+        :root:not([data-theme="light"]) {
           --surface: #191919;
           --surface-muted: #202020;
           --surface-subtle: #2a2a2a;
@@ -57,7 +84,7 @@
       * { box-sizing: border-box; }
       [hidden] { display: none !important; }
       html, body { width: 100%; min-width: 320px; min-height: 100%; margin: 0; overflow-x: clip; }
-      body { background: var(--surface-muted); }
+      body { background: var(--surface-muted); font: var(--xangi-font-ui)/1.75 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif; }
       button, input, select, textarea { font: inherit; }
       button, a { -webkit-tap-highlight-color: transparent; }
       button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
@@ -68,22 +95,22 @@
       .header { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px;
         padding-bottom: 22px; border-bottom: 1px solid var(--hairline); }
       .header-main { min-width: 0; }
-      .kicker { margin: 0 0 7px; color: var(--accent-ink); font-size: 11px; font-weight: 750;
+      .kicker { margin: 0 0 7px; color: var(--accent-ink); font-size: var(--xangi-font-micro); font-weight: 750;
         letter-spacing: .08em; text-transform: uppercase; }
-      h1 { min-width: 0; margin: 0; font-size: clamp(27px, 5vw, 38px); line-height: 1.1;
+      h1 { min-width: 0; margin: 0; font-size: var(--xangi-font-heading); font-weight: 700; letter-spacing: -.04em; line-height: 1.3;
         overflow-wrap: anywhere; }
-      .subtitle { max-width: 620px; margin: 10px 0 0; color: var(--ink-secondary); font-size: 14px;
+      .subtitle { max-width: 620px; margin: 10px 0 0; color: var(--ink-secondary); font-size: var(--xangi-font-ui);
         line-height: 1.65; }
       .header-actions { display: flex; align-items: center; gap: 9px; }
       .status { display: inline-flex; min-height: 30px; align-items: center; gap: 7px; border: 1px solid var(--border);
-        border-radius: 999px; padding: 4px 10px; color: var(--ink-secondary); background: var(--surface); font-size: 12px; white-space: nowrap; }
+        border-radius: 999px; padding: 4px 10px; color: var(--ink-secondary); background: var(--surface); font-size: var(--xangi-font-caption); white-space: nowrap; }
       .status::before { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-muted); content: ""; }
       .status.ready::before { background: var(--success); }
       .status.indexing::before { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
       @keyframes pulse { 50% { opacity: .35; } }
 
       .button { min-height: 42px; border: 1px solid var(--border); border-radius: 7px; padding: 8px 14px;
-        color: var(--ink-secondary); background: var(--surface); font-size: 13px; font-weight: 680; cursor: pointer; white-space: nowrap; }
+        color: var(--ink-secondary); background: var(--surface); font-size: var(--xangi-font-ui); font-weight: 680; cursor: pointer; white-space: nowrap; }
       .button.primary { border-color: var(--accent); color: var(--surface); background: var(--accent); }
       .button:hover:not(:disabled) { color: var(--ink); background: var(--hover); }
       .button.primary:hover:not(:disabled) { color: var(--surface); background: var(--accent-ink); }
@@ -92,45 +119,45 @@
 
       .tabs { display: flex; gap: 4px; margin-top: 20px; border-bottom: 1px solid var(--hairline); }
       .tab { min-height: 43px; border: 0; border-bottom: 2px solid transparent; padding: 9px 14px;
-        color: var(--ink-muted); background: transparent; font-size: 13px; font-weight: 700; cursor: pointer; }
+        color: var(--ink-muted); background: transparent; font-size: var(--xangi-font-ui); font-weight: 700; cursor: pointer; }
       .tab:hover { color: var(--ink); background: var(--hover); }
       .tab[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--accent-ink); }
 
       .search-panel { margin-top: 24px; }
       .search-box { position: relative; }
       .search-input { width: 100%; min-height: 56px; border: 1px solid var(--border); border-radius: 10px;
-        padding: 13px 48px 13px 17px; color: var(--ink); background: var(--surface); font-size: 17px;
+        padding: 13px 48px 13px 17px; color: var(--ink); background: var(--surface); font-size: var(--xangi-font-reading);
         box-shadow: 0 1px 1px rgb(55 53 47 / 4%); }
       .search-input::placeholder { color: var(--ink-muted); }
       .search-input:focus { border-color: var(--accent); }
       .clear { position: absolute; top: 7px; right: 7px; width: 42px; height: 42px; border: 0;
-        border-radius: 7px; color: var(--ink-muted); background: transparent; font-size: 20px; cursor: pointer; }
+        border-radius: 7px; color: var(--ink-muted); background: transparent; font-size: var(--xangi-font-heading); cursor: pointer; }
       .clear:hover { color: var(--ink); background: var(--hover); }
       .search-meta { display: flex; min-height: 38px; align-items: center; justify-content: space-between; gap: 12px;
-        padding: 8px 2px 0; color: var(--ink-muted); font-size: 12px; }
+        padding: 8px 2px 0; color: var(--ink-muted); font-size: var(--xangi-font-caption); }
       .search-meta p { margin: 0; }
       .error { margin: 16px 0 0; border: 1px solid var(--danger); border-radius: 8px; padding: 12px 14px;
-        color: var(--danger); background: var(--surface); font-size: 13px; }
+        color: var(--danger); background: var(--surface); font-size: var(--xangi-font-ui); }
 
       .results { display: grid; gap: 11px; margin-top: 12px; }
       .result { min-width: 0; border: 1px solid var(--border); border-radius: 9px; padding: 18px;
         background: var(--surface); }
-      .result-link { display: block; min-width: 0; color: var(--accent-ink); font-size: 14px; font-weight: 700;
+      .result-link { display: block; min-width: 0; color: var(--accent-ink); font-size: var(--xangi-font-ui); font-weight: 700;
         line-height: 1.45; overflow-wrap: anywhere; text-decoration: none; }
       .result-link:hover { text-decoration: underline; text-underline-offset: 3px; }
-      .result-score { margin: 8px 0 0; color: var(--ink-muted); font-size: 11px; line-height: 1.4; }
+      .result-score { margin: 8px 0 0; color: var(--ink-muted); font-size: var(--xangi-font-micro); line-height: 1.4; }
       .result-snippet { display: -webkit-box; margin: 9px 0 0; overflow: hidden; color: var(--ink-secondary);
-        font-size: 13px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere;
+        font-size: var(--xangi-font-ui); line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere;
         -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
       .empty { margin-top: 12px; border: 1px dashed var(--border); border-radius: 9px; padding: 30px 18px;
         color: var(--ink-secondary); background: var(--surface); text-align: center; }
-      .empty h2 { margin: 0; font-size: 16px; }
-      .empty p { margin: 7px 0 0; font-size: 13px; line-height: 1.6; }
+      .empty h2 { margin: 0; font-size: var(--xangi-font-section); }
+      .empty p { margin: 7px 0 0; font-size: var(--xangi-font-ui); line-height: 1.6; }
 
       .facts-panel { margin-top: 24px; }
       .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-      .panel-title { margin: 0; font-size: 19px; }
-      .panel-copy { margin: 5px 0 0; color: var(--ink-muted); font-size: 12px; line-height: 1.55; }
+      .panel-title { margin: 0; font-size: var(--xangi-font-section); }
+      .panel-copy { margin: 5px 0 0; color: var(--ink-muted); font-size: var(--xangi-font-caption); line-height: 1.55; }
       .fact-tools { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; margin-top: 16px; }
       .compact-input { width: 100%; min-width: 0; min-height: 42px; border: 1px solid var(--border);
         border-radius: 7px; padding: 8px 11px; color: var(--ink); background: var(--surface); }
@@ -139,11 +166,11 @@
         padding: 15px 16px; color: var(--ink); background: var(--surface); text-align: left; cursor: pointer; }
       .fact-card:hover { border-color: var(--accent); background: var(--accent-tint); }
       .fact-card.inactive { opacity: .62; }
-      .fact-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--ink-muted); font-size: 11px; }
-      .fact-text { margin: 8px 0 0; color: var(--ink-secondary); font-size: 13px; line-height: 1.65;
+      .fact-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--ink-muted); font-size: var(--xangi-font-micro); }
+      .fact-text { margin: 8px 0 0; color: var(--ink-secondary); font-size: var(--xangi-font-ui); line-height: 1.65;
         white-space: pre-wrap; overflow-wrap: anywhere; }
-      .fact-source { margin: 8px 0 0; color: var(--ink-muted); font-size: 11px; overflow-wrap: anywhere; }
-      .facts-footer { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--ink-muted); font-size: 12px; }
+      .fact-source { margin: 8px 0 0; color: var(--ink-muted); font-size: var(--xangi-font-micro); overflow-wrap: anywhere; }
+      .facts-footer { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--ink-muted); font-size: var(--xangi-font-caption); }
       .facts-footer input { width: 17px; height: 17px; accent-color: var(--accent); }
 
       dialog { width: min(620px, calc(100vw - 28px)); max-height: calc(100dvh - 28px); border: 1px solid var(--border);
@@ -151,27 +178,27 @@
       dialog::backdrop { background: rgb(15 15 15 / 38%); }
       .dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 16px;
         border-bottom: 1px solid var(--hairline); padding: 18px 20px; }
-      .dialog-head h2 { margin: 0; font-size: 18px; }
+      .dialog-head h2 { margin: 0; font-size: var(--xangi-font-section); }
       .icon-button { width: 40px; height: 40px; border: 0; border-radius: 7px; color: var(--ink-secondary);
         background: transparent; font-size: 21px; cursor: pointer; }
       .icon-button:hover { color: var(--ink); background: var(--hover); }
       .settings-form { display: grid; gap: 19px; max-height: calc(100dvh - 168px); overflow-y: auto; padding: 20px; }
       .field { display: grid; gap: 7px; }
-      .field > span, .switch-copy strong { font-size: 13px; font-weight: 700; }
-      .field small, .switch-copy small { color: var(--ink-muted); font-size: 11px; line-height: 1.5; }
+      .field > span, .switch-copy strong { font-size: var(--xangi-font-ui); font-weight: 700; }
+      .field small, .switch-copy small { color: var(--ink-muted); font-size: var(--xangi-font-micro); line-height: 1.5; }
       .field input, .field select, .field textarea { width: 100%; min-height: 42px; border: 1px solid var(--border); border-radius: 7px;
         padding: 8px 10px; color: var(--ink); background: var(--surface); }
       .field textarea { min-height: 130px; resize: vertical; line-height: 1.55; }
       .weight-fieldset { min-width: 0; margin: 0; border: 1px solid var(--border); border-radius: 8px;
         padding: 14px; }
-      .weight-fieldset legend { padding: 0 5px; font-size: 13px; font-weight: 700; }
-      .weight-help { margin: 0 0 11px; color: var(--ink-muted); font-size: 11px; line-height: 1.5; }
+      .weight-fieldset legend { padding: 0 5px; font-size: var(--xangi-font-ui); font-weight: 700; }
+      .weight-help { margin: 0 0 11px; color: var(--ink-muted); font-size: var(--xangi-font-micro); line-height: 1.5; }
       .weight-list { display: grid; gap: 8px; }
       .weight-row { display: grid; grid-template-columns: minmax(0, 1fr) 90px 40px; gap: 7px; align-items: center; }
       .weight-row input { width: 100%; min-width: 0; min-height: 40px; border: 1px solid var(--border);
         border-radius: 7px; padding: 7px 9px; color: var(--ink); background: var(--surface); }
       .weight-input { display: grid; gap: 3px; min-width: 0; }
-      .weight-warning { color: var(--danger); font-size: 11px; line-height: 1.35; }
+      .weight-warning { color: var(--danger); font-size: var(--xangi-font-micro); line-height: 1.35; }
       .weight-remove { width: 40px; height: 40px; border: 1px solid var(--border); border-radius: 7px;
         color: var(--ink-muted); background: var(--surface); cursor: pointer; }
       .weight-remove:hover { color: var(--danger); background: var(--hover); }
@@ -180,7 +207,7 @@
       .switch input { width: 19px; height: 19px; margin: 1px 0 0; accent-color: var(--accent); }
       .switch-copy { display: grid; gap: 3px; }
       .index-card { border: 1px solid var(--border); border-radius: 8px; padding: 14px; background: var(--surface-muted); }
-      .index-card p { margin: 0 0 11px; color: var(--ink-secondary); font-size: 12px; line-height: 1.55; }
+      .index-card p { margin: 0 0 11px; color: var(--ink-secondary); font-size: var(--xangi-font-caption); line-height: 1.55; }
       .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; border-top: 1px solid var(--hairline);
         padding: 15px 20px; }
       .dialog-actions .danger { margin-right: auto; border-color: var(--danger); color: var(--danger); }
@@ -190,7 +217,7 @@
         .header { align-items: flex-start; flex-direction: column; gap: 15px; }
         .header-actions { width: 100%; justify-content: space-between; }
         .status { min-width: 0; }
-        .search-input { min-height: 52px; font-size: 16px; }
+        .search-input { min-height: 52px; font-size: var(--xangi-font-reading); }
         .search-meta { align-items: flex-start; flex-direction: column; gap: 3px; }
         .result { padding: 15px; }
         .panel-head { align-items: flex-start; }
@@ -205,16 +232,50 @@
 .xangi-home-button:focus-visible { outline: 3px solid #2563eb; outline-offset: 3px; }
 .xangi-home-button:active { background: #dce6f2; }
 .xangi-home-button svg { width: 18px; height: 18px; flex-shrink: 0; }
-    </style>
+    :root[data-theme="dark"]{color-scheme:dark;
+          --surface: #191919;
+          --surface-muted: #202020;
+          --surface-subtle: #2a2a2a;
+          --ink: #efefed;
+          --ink-secondary: #c8c7c4;
+          --ink-muted: #aaa9a5;
+          --border: #40403d;
+          --hairline: #333330;
+          --accent: #5aa7e8;
+          --accent-ink: #8dc6f3;
+          --accent-tint: rgb(90 167 232 / 18%);
+          --success: #68c68a;
+          --success-tint: rgb(104 198 138 / 14%);
+          --danger: #ef7771;
+          --hover: rgb(255 255 255 / 7%);
+          --shadow: 0 18px 48px rgb(0 0 0 / 35%);
+        }
+
+/* Optional embedded presentation chosen by this extension. */
+:root[data-xangi-embedded="true"] .xangi-host-nav{display:none}
+:root[data-xangi-embedded="true"] .shell { width:100%; max-width:none; padding:12px 28px 32px; }
+@media(max-width:768px) { :root[data-xangi-embedded="true"] .shell { padding-inline:16px; } }
+@media(max-width:900px){
+  .header-main h1{font-size: var(--xangi-font-heading);white-space:nowrap}
+  :root[data-xangi-embedded="true"] .shell{padding:0 16px 32px}
+  .header{height:60px;min-height:60px;padding:8px 12px;margin-inline:-16px;align-items:center;flex-direction:row;gap:8px}
+  .header-actions{margin-left:auto;width:auto;gap:8px}
+}
+
+/* Shared filer density. Keep article/report contents and editor geometry local. */
+body { font-family: var(--xangi-font-family); font-size: var(--xangi-font-ui); }
+
+@media (max-width: 768px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]), textarea, select { font-size: var(--xangi-font-reading); }
+}
+</style>
   </head>
   <body>
-    <nav class="xangi-host-nav" id="xangiHostNav" aria-label="xangi共通ナビゲーション" hidden><a class="xangi-home-button" id="xangiHomeLink" href="/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg><span>xangiホーム</span></a></nav>
+    <nav class="xangi-host-nav" id="xangiHostNav" aria-label="xangi共通ナビゲーション" hidden><a class="xangi-home-button" id="xangiHomeLink" href="/" target="_top"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg><span>xangiホーム</span></a></nav>
     <main class="shell">
       <header class="header">
         <div class="header-main">
-          <p class="kicker">XANGI-SEARCH</p>
           <h1>xangi-search</h1>
-          <p class="subtitle">入力に合わせて、ワークスペース内の関連ファイルをローカルで検索します。</p>
         </div>
         <div class="header-actions">
           <span class="status" id="status">接続確認中</span>
